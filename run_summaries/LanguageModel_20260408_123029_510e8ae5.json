@@ -1,0 +1,25 @@
+{
+  "run_id": "LanguageModel_20260408_123029_510e8ae5",
+  "timestamp": "2026-04-08T12:30:29.077535",
+  "model_name": "LanguageModel",
+  "backbone_name": "LMBackbone",
+  "final_metrics": {
+    "final_epoch": 30,
+    "valid_loss": 8.206329345703125,
+    "valid_accuracy": 0.001515625
+  },
+  "hyperparameters": {
+    "seed": 21,
+    "input_type": "discrete",
+    "loss_type": "ce",
+    "max_epochs": 30,
+    "learning_rate": 0.00065,
+    "weight_decay": 0.1,
+    "temperature_start": 5.0,
+    "temperature_end": 0.0,
+    "temperature_schedule": "cosine",
+    "name": "default",
+    "d_model": 64,
+    "n_layers": 1
+  }
+}

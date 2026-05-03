@@ -1,0 +1,27 @@
+{
+  "run_id": "LanguageModel_20260502_123135_bf054b94",
+  "timestamp": "2026-05-02T12:31:35.439123",
+  "model_name": "LanguageModel",
+  "backbone_name": "LMBackbone",
+  "final_metrics": {
+    "final_epoch": 5,
+    "valid_loss": 0.005591126624494791,
+    "valid_accuracy": 0.9990833333333333
+  },
+  "hyperparameters": {
+    "seed": 123,
+    "input_type": "discrete",
+    "loss_type": "ce",
+    "max_epochs": 10,
+    "learning_rate": 0.0003,
+    "weight_decay": 0.1,
+    "noise_scale_start": null,
+    "noise_scale_end": null,
+    "noise_scale_schedule": null,
+    "mixture_temperature": null,
+    "uniform_topk_eps": null,
+    "name": "default",
+    "d_model": 512,
+    "n_layers": 8
+  }
+}
