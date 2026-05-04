@@ -1,17 +1,19 @@
 import math
 import torch
 import torch.nn as nn
+from torch import Tensor
+from typing import Optional
 from einops import repeat
 
 
 class S4D(nn.Module):
     """
-    Base S4D block: Structured State Spaces with Diagonal SSMs.
+    Base S4D mixer: Structured State Spaces with Diagonal SSMs.
 
     Simplification of Mamba:
       - Removes causal conv1d, x_proj, dt_proj (Mamba's input-dependent scan).
-      - Replaces selective scan with a fixed diagonal SSM (parameters A, B, C, D, log_dt
-        are learned but not input-dependent).
+      - Replaces selective scan with a fixed diagonal SSM (A, B, C, D, log_dt are
+        learned but not input-dependent).
       - Uses ZOH discretization and FFT-based convolution for efficient training.
 
     Parameters are per-channel (d_inner channels, N/2 complex conjugate pairs each),
@@ -37,7 +39,7 @@ class S4D(nn.Module):
         self.d_model = d_model
         self.d_state = d_state
         self.d_inner = expand * d_model
-        self.n2 = d_state // 2
+        self.n2 = d_state // 2  # complex conjugate pairs per channel
         self.layer_idx = layer_idx
 
         H, N2 = self.d_inner, self.n2
@@ -96,13 +98,10 @@ class S4D(nn.Module):
         Bbar = B * (Abar - 1.0) / A_safe                        # (H, N2)
 
         # Raise Abar to integer powers 0..L-1 using log for numerical stability
-        # log_Abar: (H, N2), t: (L,)
         log_Abar = torch.log(Abar + 1e-30)                       # (H, N2) complex
         t = torch.arange(L, device=self.log_dt.device, dtype=torch.float32)
-        # powers[h, n, t] = Abar[h,n]^t = exp(t * log_Abar[h,n])
         powers = torch.exp(t.view(1, 1, L) * log_Abar.unsqueeze(-1))  # (H, N2, L)
 
-        # K[h, t] = 2 * Re( sum_n (C*Bbar)[h,n] * powers[h,n,t] )
         CB = (C * Bbar).unsqueeze(-1)                            # (H, N2, 1)
         K = 2.0 * (CB * powers).sum(dim=1).real                 # (H, L)
         return K
@@ -119,14 +118,15 @@ class S4D(nn.Module):
         Y = U * K_.unsqueeze(0)
         return torch.fft.irfft(Y, n=fft_len)[..., :L].to(u.dtype)
 
-    def forward(self, u, *args, **kwargs):
+    def forward(self, hidden_states, **kwargs):
         """
-        u: (B, L, D)  ->  (B, L, D)
+        hidden_states: (B, L, D)
+        Returns: same shape as hidden_states
         """
-        B, L, D = u.shape
+        B, L, D = hidden_states.shape
 
         # Project to (x, z): x goes through SSM, z gates the output
-        xz = self.in_proj(u)                                     # (B, L, 2*H)
+        xz = self.in_proj(hidden_states)                         # (B, L, 2*H)
         x, z = xz.chunk(2, dim=-1)                              # (B, L, H) each
 
         x = x.transpose(1, 2)                                   # (B, H, L)
@@ -142,3 +142,56 @@ class S4D(nn.Module):
 
     def state_size(self, sequence_length: int = 2048) -> int:
         return self.d_inner * self.d_state
+
+
+class S4DBlock(nn.Module):
+    def __init__(
+        self, config, residual_in_fp32=True, norm_epsilon=1e-5, **factory_kwargs
+    ):
+        """
+        Block wrapping S4D with LayerNorm and residual connection, mirroring MambaBlock.
+
+        Structure (prenorm):  Add -> LN -> S4D
+        Returns both hidden_states and residual so the caller can chain blocks.
+        """
+        super().__init__()
+        d_model = config.d_model
+        self.residual_in_fp32 = residual_in_fp32
+        self.mixer = S4D(d_model, **factory_kwargs, **config.sequence_mixer.kwargs)
+        self.norm = nn.LayerNorm(d_model, eps=norm_epsilon)
+
+    def forward(
+        self, hidden_states: Tensor, residual: Optional[Tensor] = None
+    ):
+        """
+        hidden_states: the sequence to the encoder layer (required).
+        residual: hidden_states = Mixer(LN(residual))
+        """
+        residual = (hidden_states + residual) if residual is not None else hidden_states
+        hidden_states = self.norm(residual.to(dtype=self.norm.weight.dtype))
+        if self.residual_in_fp32:
+            residual = residual.to(torch.float32)
+        hidden_states = self.mixer(hidden_states)
+        return hidden_states, residual
+
+
+def S4DInit(
+    module,
+    n_layer,
+    initializer_range=0.02,
+    rescale_prenorm_residual=True,
+    n_residuals_per_layer=1,
+):
+    if isinstance(module, nn.Linear):
+        if module.bias is not None:
+            if not getattr(module.bias, "_no_reinit", False):
+                nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.Embedding):
+        nn.init.normal_(module.weight, std=initializer_range)
+
+    if rescale_prenorm_residual:
+        for name, p in module.named_parameters():
+            if "out_proj.weight" in name:
+                nn.init.kaiming_uniform_(p, a=math.sqrt(5))
+                with torch.no_grad():
+                    p /= math.sqrt(n_residuals_per_layer * n_layer)
