@@ -22,7 +22,6 @@ for difficulty in difficulty_options:
                 learning_rate=lr,
                 max_epochs=10,
                 data=DataConfig(
-                    # cache_dir="/path/to/cache/dir"  TODO: add this
                     train_configs=[
                         MQARConfig(
                             num_examples=20_000,

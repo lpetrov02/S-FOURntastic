@@ -14,12 +14,6 @@ class ZoologyLogger(ABC):
     def __init__(self, config: TrainConfig):
         self.no_logger = False
 
-        if config.logger.project_name is None or config.logger.entity is None:
-            print("No logger specified, skipping...")
-            self.no_logger = True
-            return
-        self.no_logger = False
-
     @abstractmethod
     def log_config(self, config: TrainConfig):
         pass
@@ -40,6 +34,11 @@ class ZoologyLogger(ABC):
 class WandbLogger(ZoologyLogger):
     def __init__(self, config: TrainConfig):
         super().__init__(config)
+        if config.logger.project_name is None or config.logger.entity is None:
+            print("No logger specified, skipping...")
+            self.no_logger = True
+            return
+
         self.run = wandb.init(
             name=config.run_id,
             entity=config.logger.entity,
@@ -82,6 +81,11 @@ class WandbLogger(ZoologyLogger):
 class TensorboardLogger(ZoologyLogger):
     def __init__(self, config: TrainConfig):
         super().__init__(config)
+        if config.logger.project_name is None:
+            print("No logger specified, skipping...")
+            self.no_logger = True
+            return
+
         log_dir = f"runs/{config.logger.project_name}/{config.run_id}"
         self.writer = SummaryWriter(log_dir=log_dir)
         self._step = 0
@@ -111,7 +115,8 @@ class TensorboardLogger(ZoologyLogger):
                 continue
             try:
                 self.writer.add_scalar(key, value, global_step=self._step)
-            except Exception:
+            except Exception as e:
+                print(e)
                 pass
         self._step += 1
 

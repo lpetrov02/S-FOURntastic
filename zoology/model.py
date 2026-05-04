@@ -151,7 +151,6 @@ def _init_weights(
 
     if rescale_prenorm_residual:
         if 'Mamba' in block_type:
-            print("hi mamba!")
             if rescale_prenorm_residual:
                 # Reinitialize selected weights subject to the OpenAI GPT-2 Paper Scheme:
                 #   > A modified initialization which accounts for the accumulation on the residual path with model depth. Scale
@@ -276,12 +275,13 @@ def _compute_state_size(layers, sequence_length: int):
     for layer in layers:
         if MambaBlock and isinstance(layer, MambaBlock):
             mixer = layer.mixer
-        if Mamba2Block and isinstance(layer, Mamba2Block):
+        elif Mamba2Block and isinstance(layer, Mamba2Block):
             mixer = layer.mixer
         elif isinstance(layer, TransformerBlock):
             mixer = layer.sequence_mixer
         else: 
             return None
+        
         if hasattr(mixer, "state_size"):
             state_size += mixer.state_size(sequence_length=sequence_length)
         else:
