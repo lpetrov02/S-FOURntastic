@@ -57,7 +57,7 @@ for difficulty in difficulty_options:
                             kwargs={"hidden_mult": 2}
                         ),
                         d_model=MODEL_DIM,
-                        block_type="S4D",
+                        block_type="S4DBlock",
                         n_layers=n,
                     ),
                     logger=LoggerConfig(
