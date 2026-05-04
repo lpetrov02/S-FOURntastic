@@ -150,7 +150,7 @@ def _init_weights(
                 nn.init.normal_(module.weight, std=initializer_range)
 
     if rescale_prenorm_residual:
-        if 'Mamba' in block_type:
+        if 'Mamba' in block_type or "S4D" in block_type:
             if rescale_prenorm_residual:
                 # Reinitialize selected weights subject to the OpenAI GPT-2 Paper Scheme:
                 #   > A modified initialization which accounts for the accumulation on the residual path with model depth. Scale
@@ -233,6 +233,9 @@ class LMBackbone(nn.Module):
         elif config.block_type == "Mamba2Block": 
             from zoology.mixers.mamba2 import Mamba2Block
             block_cls = Mamba2Block
+        elif config.block_type == "S4DBlock":
+            from zoology.mixers.s4d_base import S4DBlock
+            block_cls = S4DBlock
         self.layers = nn.ModuleList(
             [
                 block_cls(config=config, layer_idx=i)
@@ -271,11 +274,17 @@ def _compute_state_size(layers, sequence_length: int):
         from zoology.mixers.mamba2 import Mamba2Block
     except:
         Mamba2Block = None
+    try:
+        from zoology.mixers.s4d_base import S4DBlock
+    except:
+        S4DBlock = None
     state_size = 0
     for layer in layers:
         if MambaBlock and isinstance(layer, MambaBlock):
             mixer = layer.mixer
         elif Mamba2Block and isinstance(layer, Mamba2Block):
+            mixer = layer.mixer
+        elif S4DBlock and isinstance(layer, S4DBlock):
             mixer = layer.mixer
         elif isinstance(layer, TransformerBlock):
             mixer = layer.sequence_mixer
