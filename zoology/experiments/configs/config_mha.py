@@ -3,16 +3,17 @@ from zoology.data.multiquery_ar import MQARConfig
 
 
 VOCAB_SIZE = 8192
-MAX_LENGTH = 1024
+MAX_LENGTH = 512
+MODEL_DIM = 256
 
 # lr_options = [1e-4, 3e-4, 1e-3, 1e-2]
 # difficulty_options = [4, 16, 64]
 # n_layers = [1, 4, 8]
 
 lr_options = [3e-4]
-difficulty_options = [64]
-n_layers = [1]
-dataset_size = [50_000, 100_000, 200_000]
+difficulty_options = [32]
+n_layers = [2]
+dataset_size = [100_000]
 
 
 configs = []
@@ -23,7 +24,8 @@ for difficulty in difficulty_options:
                 batch_size = 128 if n <= 4 else 64
                 config = TrainConfig(
                     learning_rate=lr,
-                    max_epochs=20,
+                    max_epochs=30,
+                    weight_decay=0.1,
                     data=DataConfig(
                         train_configs=[
                             MQARConfig(
@@ -58,7 +60,7 @@ for difficulty in difficulty_options:
                             name="zoology.mixers.mlp.MLP", 
                             kwargs={"hidden_mult": 2}
                         ),
-                        d_model=256,
+                        d_model=MODEL_DIM,
                         block_type="TransformerBlock",
                         n_layers=n,
                     ),
