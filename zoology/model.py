@@ -295,6 +295,7 @@ def _compute_state_size(layers, sequence_length: int):
         S4DMoEBlock = None
     state_size = 0
     for layer in layers:
+        print(layer)
         if MambaBlock and isinstance(layer, MambaBlock):
             mixer = layer.mixer
         elif Mamba2Block and isinstance(layer, Mamba2Block):

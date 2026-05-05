@@ -433,6 +433,9 @@ class TokenRoutedS4D(nn.Module):
         if return_router_aux:
             return y, aux
         return y
+    
+    def state_size(self, sequence_length: int = 2048) -> int:
+        return self.h * self.n * self.n_experts
 
 
 class TokenRoutedS4DBlock(nn.Module):
@@ -465,3 +468,25 @@ class TokenRoutedS4DBlock(nn.Module):
             residual = residual.to(torch.float32)
         hidden_states = self.mixer(hidden_states)
         return hidden_states, residual
+
+
+def TokenRoutedS4DInit(
+    module,
+    n_layer,
+    initializer_range=0.02,
+    rescale_prenorm_residual=True,
+    n_residuals_per_layer=1,
+):
+    if isinstance(module, nn.Linear):
+        if module.bias is not None:
+            if not getattr(module.bias, "_no_reinit", False):
+                nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.Embedding):
+        nn.init.normal_(module.weight, std=initializer_range)
+
+    if rescale_prenorm_residual:
+        for name, p in module.named_parameters():
+            # out_W is the per-expert output projection (E, 2H, H), analogous to out_proj.weight
+            if "out_W" in name:
+                with torch.no_grad():
+                    p /= math.sqrt(n_residuals_per_layer * n_layer)
