@@ -236,6 +236,10 @@ class LMBackbone(nn.Module):
         elif config.block_type == "S4DBlock":
             from zoology.mixers.s4d_base import S4DBlock
             block_cls = S4DBlock
+        elif config.block_type == "TokenRoutedS4DBlock":
+            from zoology.mixers.s4d import TokenRoutedS4DBlock
+            block_cls = TokenRoutedS4DBlock
+
         self.layers = nn.ModuleList(
             [
                 block_cls(config=config, layer_idx=i)

@@ -2,6 +2,8 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import Tensor
+from typing import Optional
 from einops import repeat, rearrange
 
 
@@ -431,3 +433,35 @@ class TokenRoutedS4D(nn.Module):
         if return_router_aux:
             return y, aux
         return y
+
+
+class TokenRoutedS4DBlock(nn.Module):
+    def __init__(
+        self, config, residual_in_fp32=True, norm_epsilon=1e-5, **factory_kwargs
+    ):
+        """
+        Block wrapping TokenRoutedS4D with LayerNorm and residual connection,
+        mirroring MambaBlock and S4DBlock.
+
+        Structure (prenorm):  Add -> LN -> TokenRoutedS4D
+        Returns both hidden_states and residual so the caller can chain blocks.
+        """
+        super().__init__()
+        d_model = config.d_model
+        self.residual_in_fp32 = residual_in_fp32
+        self.mixer = TokenRoutedS4D(d_model, **factory_kwargs, **config.sequence_mixer.kwargs)
+        self.norm = nn.LayerNorm(d_model, eps=norm_epsilon)
+
+    def forward(
+        self, hidden_states: Tensor, residual: Optional[Tensor] = None
+    ):
+        """
+        hidden_states: the sequence to the encoder layer (required).
+        residual: hidden_states = Mixer(LN(residual))
+        """
+        residual = (hidden_states + residual) if residual is not None else hidden_states
+        hidden_states = self.norm(residual.to(dtype=self.norm.weight.dtype))
+        if self.residual_in_fp32:
+            residual = residual.to(torch.float32)
+        hidden_states = self.mixer(hidden_states)
+        return hidden_states, residual
