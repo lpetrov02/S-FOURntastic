@@ -198,7 +198,7 @@ class S4DMoE(nn.Module):
         C = torch.randn(E, H, N2, dtype=torch.cfloat)
         self.C = nn.Parameter(torch.view_as_real(C))                 # (E, H, N2, 2)
 
-        self.D = nn.Parameter(torch.ones(E, H))                      # (E, H)
+        self.D = nn.Parameter(torch.randn(E, H))                     # (E, H)
 
         self.act = nn.SiLU()
         self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
@@ -271,16 +271,16 @@ class S4DMoE(nn.Module):
             uniform_topk_eps=uniform_topk_eps,
         )  # alpha: (B, L, E)
 
-        # Binary mask of active experts per token: (B, E, L)
-        mask = (alpha > 0.).permute(0, 2, 1).to(x.dtype)            # (B, E, L)
-
-        # Zero out input to inactive experts: (B, 1, H, L) * (B, E, 1, L) -> (B, E, H, L)
-        x_exp = x.unsqueeze(1) * mask.unsqueeze(2)                   # (B, E, H, L)
-        x_exp = x_exp.reshape(B, E * H, L)                           # (B, E*H, L)
+        # All experts see the full input; routing scores gate at output.
+        # Avoiding a binary mask here is critical: mask = (alpha > 0) would zero the
+        # SSM output for unchosen experts, destroying the gradient signal that the
+        # straight-through estimator needs to train the router.
+        x_flat = x.unsqueeze(1).expand(-1, E, -1, -1).contiguous()  # (B, E, H, L)
+        x_flat = x_flat.reshape(B, E * H, L)                         # (B, E*H, L)
 
         K = self._ssm_kernel(L)                                       # (E*H, L)
         D_flat = self.D.reshape(E * H, 1)
-        y = self._fft_conv(x_exp, K) + D_flat * x_exp               # (B, E*H, L)
+        y = self._fft_conv(x_flat, K) + D_flat * x_flat             # (B, E*H, L)
 
         # Weight by routing scores and sum over experts
         y = y.reshape(B, E, H, L)
