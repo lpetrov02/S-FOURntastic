@@ -236,6 +236,9 @@ class LMBackbone(nn.Module):
         elif config.block_type == "S4DBlock":
             from zoology.mixers.s4d_base import S4DBlock
             block_cls = S4DBlock
+        elif config.block_type == "S4DMoEBlock":
+            from zoology.mixers.s4d_moe import S4DMoEBlock
+            block_cls = S4DMoEBlock
         elif config.block_type == "TokenRoutedS4DBlock":
             from zoology.mixers.s4d import TokenRoutedS4DBlock
             block_cls = TokenRoutedS4DBlock
@@ -282,6 +285,14 @@ def _compute_state_size(layers, sequence_length: int):
         from zoology.mixers.s4d_base import S4DBlock
     except:
         S4DBlock = None
+    try:
+        from zoology.mixers.s4d import TokenRoutedS4DBlock
+    except:
+        TokenRoutedS4DBlock = None
+    try:
+        from zoology.mixers.s4d_moe import S4DMoEBlock
+    except:
+        S4DMoEBlock = None
     state_size = 0
     for layer in layers:
         if MambaBlock and isinstance(layer, MambaBlock):
@@ -289,6 +300,10 @@ def _compute_state_size(layers, sequence_length: int):
         elif Mamba2Block and isinstance(layer, Mamba2Block):
             mixer = layer.mixer
         elif S4DBlock and isinstance(layer, S4DBlock):
+            mixer = layer.mixer
+        elif S4DMoEBlock and isinstance(layer, S4DMoEBlock):
+            mixer = layer.mixer
+        elif TokenRoutedS4DBlock and isinstance(layer, TokenRoutedS4DBlock):
             mixer = layer.mixer
         elif isinstance(layer, TransformerBlock):
             mixer = layer.sequence_mixer
