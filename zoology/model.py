@@ -236,6 +236,16 @@ class LMBackbone(nn.Module):
         elif config.block_type == "S4DBlock":
             from zoology.mixers.s4d_base import S4DBlock
             block_cls = S4DBlock
+        elif config.block_type == "S4DMoEv1Block":
+            from zoology.mixers.s4d_moe import S4DMoEv1Block
+            block_cls = S4DMoEv1Block
+        elif config.block_type == "S4DMoEv2Block":
+            from zoology.mixers.s4d_moe import S4DMoEv2Block
+            block_cls = S4DMoEv2Block
+        elif config.block_type == "TokenRoutedS4DBlock":
+            from zoology.mixers.s4d import TokenRoutedS4DBlock
+            block_cls = TokenRoutedS4DBlock
+
         self.layers = nn.ModuleList(
             [
                 block_cls(config=config, layer_idx=i)
@@ -278,13 +288,32 @@ def _compute_state_size(layers, sequence_length: int):
         from zoology.mixers.s4d_base import S4DBlock
     except:
         S4DBlock = None
+    try:
+        from zoology.mixers.s4d import TokenRoutedS4DBlock
+    except:
+        TokenRoutedS4DBlock = None
+    try:
+        from zoology.mixers.s4d_moe import S4DMoEv1Block
+    except:
+        S4DMoEv1Block = None
+    try:
+        from zoology.mixers.s4d_moe import S4DMoEv2Block
+    except:
+        S4DMoEv2Block = None
     state_size = 0
     for layer in layers:
+        print(layer)
         if MambaBlock and isinstance(layer, MambaBlock):
             mixer = layer.mixer
         elif Mamba2Block and isinstance(layer, Mamba2Block):
             mixer = layer.mixer
         elif S4DBlock and isinstance(layer, S4DBlock):
+            mixer = layer.mixer
+        elif S4DMoEv1Block and isinstance(layer, S4DMoEv1Block):
+            mixer = layer.mixer
+        elif S4DMoEv2Block and isinstance(layer, S4DMoEv2Block):
+            mixer = layer.mixer
+        elif TokenRoutedS4DBlock and isinstance(layer, TokenRoutedS4DBlock):
             mixer = layer.mixer
         elif isinstance(layer, TransformerBlock):
             mixer = layer.sequence_mixer

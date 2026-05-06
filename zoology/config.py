@@ -110,7 +110,10 @@ class ModelConfig(BaseConfig):
     layer_norm_epsilon: float = 1e-5
     pad_vocab_size_multiple: int = 1
 
-    block_type: Literal["TransformerBlock", "MambaBlock", "Mamba2Block", "S4DBlock"] = "TransformerBlock"
+    block_type: Literal[
+        "TransformerBlock",
+        "MambaBlock", "Mamba2Block",
+        "S4DBlock", "S4DMoEv1Block", "S4DMoEv2Block", "TokenRoutedS4DBlock"] = "TransformerBlock"
     name: str = "default"
 
 class LoggerConfig(BaseConfig):
