@@ -84,11 +84,14 @@ class TokenTopKRouter(nn.Module):
     Output: alpha/logits of shape (B, L, E)
     """
 
-    def __init__(self, d_model: int, n_experts: int, top_k: int):
+    def __init__(self, d_model: int, n_experts: int, top_k: int, d_state: int = None, use_state_for_routing: bool = False):
         super().__init__()
         self.n_experts = n_experts
         self.top_k = top_k
-        self.proj = nn.Conv1d(d_model, n_experts, kernel_size=1)
+
+        self.use_state = use_state_for_routing
+        input_dim = d_model + d_state if self.use_state else d_model
+        self.proj = nn.Conv1d(input_dim, n_experts, kernel_size=1)
 
     def forward(
         self,
@@ -97,13 +100,20 @@ class TokenTopKRouter(nn.Module):
         mixture_temperature: float = 1.0,
         straight_through: bool = True,
         uniform_topk_eps: float = 0.0,
+        state: torch.Tensor = None,
     ):
         """
         u: (B, H, L)
+        state: Optional[B, H, N]
         returns:
           alpha:  (B, L, E) sparse convex weights
           logits: (B, L, E)
         """
+        if self.use_state:
+            assert state is not None
+            state = state.abs().mean(1).unsqueeze(-1).expand(-1, -1, u.shape[-1])
+            u = torch.cat([u, state], dim=1)
+
         logits = self.proj(u).transpose(1, 2)  # (B, L, E)
 
         # Selection scores: noisy during training, deterministic at eval
@@ -137,6 +147,69 @@ class TokenTopKRouter(nn.Module):
         return alpha, logits
 
 
+class CausalConv1d(nn.Module):
+    """Conv1d with causal masking via left-padding."""
+
+    def __init__(self, dim: int, kernel_size: int, **kwargs):
+        super().__init__()
+        self.kernel_size = kernel_size
+        # Causal pad = (kernel_size - 1) on the left only
+        self._pad = kernel_size - 1
+        self.conv = nn.Conv1d(dim, dim, kernel_size, groups=dim, **kwargs)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, C, L]
+        x = F.pad(x, (self._pad, 0))   # pad left only → causal
+        return self.conv(x)
+
+
+class ConvBlock(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        kernel_size: int = 4,
+        activation: str = "silu",      # "silu" | "gelu" | "relu"
+        norm: str = "layer",           # "layer" | "rms"
+        dropout: float = 0.0,
+        bias: bool = False,
+    ):
+        super().__init__()
+
+
+        # ── Normalisation ────────────────────────────────────────────────────
+        if norm == "layer":
+            self.norm = nn.LayerNorm(d_model)
+        elif norm == "rms":
+            self.norm = nn.RMSNorm(d_model)
+        else:
+            raise ValueError(f"Unknown norm: {norm!r}")
+
+        # ── Activation ───────────────────────────────────────────────────────
+        _acts = {"silu": nn.SiLU, "gelu": nn.GELU, "relu": nn.ReLU}
+        if activation not in _acts:
+            raise ValueError(f"Unknown activation: {activation!r}")
+        self.act = _acts[activation]()
+
+        # ── Causal Conv1d ────────────────────────────────────────────────────
+        self.conv = CausalConv1d(d_model, kernel_size, bias=bias)
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: [B, D, L]
+        Returns:
+            [B, D, L]  (residual connection included)
+        """
+        residual = x
+        x = self.norm(x.transpose(-1, -2)).transpose(-1, -2)
+        x = self.act(x)
+        x = self.conv(x)
+        x = self.dropout(x)
+        return x + residual
+
+
 class TokenRoutedS4D(nn.Module):
     """
     Token-routed diagonal SSM.
@@ -159,6 +232,9 @@ class TokenRoutedS4D(nn.Module):
         dt_max: float = 1e-1,
         layer_idx=None,
         learnable_A_imag: bool = True,
+        use_state_for_routing: bool = False,
+        pre_routing_kernel_size: int = 4,
+        num_conv_blocks: int = 0,
     ):
         super().__init__()
 
@@ -172,10 +248,16 @@ class TokenRoutedS4D(nn.Module):
         self.n_experts = n_experts
         self.top_k = top_k
 
+        self.n_convs = num_conv_blocks
+        self.kernel_size = pre_routing_kernel_size
+
         E, H, N2 = n_experts, d_model, self.n2
 
         # Router
-        self.router = TokenTopKRouter(H, E, top_k)
+        self.router = TokenTopKRouter(H, E, top_k, N2, use_state_for_routing)
+        self.conv = nn.Sequential(
+            *[ConvBlock(d_model, kernel_size=self.kernel_size) for _ in range(self.n_convs)]
+        ) if self.n_convs > 0 else nn.Identity()
 
         # Expert banks
         log_dt = torch.rand(E, H) * (math.log(dt_max) - math.log(dt_min)) + math.log(dt_min)
@@ -349,7 +431,7 @@ class TokenRoutedS4D(nn.Module):
         u: torch.Tensor,
         noise_scale: float = 1.0,
         mixture_temperature: float = 1.0,
-        chunk_size: int = 256,
+        chunk_size: int = 64,
         straight_through: bool = True,
         return_router_aux: bool = False,
         uniform_topk_eps: float = 0.0,
@@ -380,18 +462,6 @@ class TokenRoutedS4D(nn.Module):
         if chunk_size is None or chunk_size <= 0:
             chunk_size = L
 
-        # Token-level routing over full sequence
-        alpha, logits = self.router(
-            u,
-            noise_scale=noise_scale,
-            mixture_temperature=mixture_temperature,
-            straight_through=straight_through,
-            uniform_topk_eps=uniform_topk_eps,
-        )
-
-        # Materialize expert banks once
-        real_bank, complex_bank = self._materialize_expert_banks()
-
         # Complex recurrent state
         state = torch.zeros(
             Bsz,
@@ -401,23 +471,38 @@ class TokenRoutedS4D(nn.Module):
             dtype=torch.cfloat,
         )
 
+        # Materialize expert banks once
+        real_bank, complex_bank = self._materialize_expert_banks()
+
+
         outputs = []
+        accum_logits = []
         for start in range(0, L, chunk_size):
             end = min(start + chunk_size, L)
-
             u_chunk = u[:, :, start:end].contiguous()          # (B, H, T)
-            alpha_chunk = alpha[:, start:end, :].contiguous()  # (B, T, E)
+
+            # Token-level routing over full sequence
+            alpha, logits = self.router(
+                self.conv(u_chunk),
+                noise_scale=noise_scale,
+                mixture_temperature=mixture_temperature,
+                straight_through=straight_through,
+                uniform_topk_eps=uniform_topk_eps,
+                state=state,
+            )
+            accum_logits.append(logits)
 
             y_chunk, state = self._scan_chunk(
                 u_chunk=u_chunk,
-                alpha_chunk=alpha_chunk,
+                alpha_chunk=alpha,
                 state=state,
                 real_bank=real_bank,
                 complex_bank=complex_bank,
             )
 
-            y_chunk = self._dynamic_output_projection(y_chunk, alpha_chunk)
+            y_chunk = self._dynamic_output_projection(y_chunk, alpha)
             outputs.append(y_chunk)
+        logits = torch.cat(accum_logits, dim=1)
 
         y = torch.cat(outputs, dim=-1)  # (B, H, L)
 

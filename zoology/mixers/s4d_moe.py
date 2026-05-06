@@ -137,7 +137,7 @@ class TokenTopKRouter(nn.Module):
         return alpha, logits
 
 
-class S4DMoE(nn.Module):
+class S4DMoEv1(nn.Module):
     """
     MoE-style S4D: tokens are routed to top-k experts; only chosen experts
     receive the token as input (masked-input approach).  Each expert is a
@@ -295,22 +295,200 @@ class S4DMoE(nn.Module):
 
     def state_size(self, sequence_length: int = 2048) -> int:
         return self.d_inner * self.d_state * self.num_experts
+    
+
+class S4DMoEv2(nn.Module):
+    """
+    MoE-style S4D: tokens are routed to top-k experts; only chosen experts
+    receive the token as input (masked-input approach).  Each expert is a
+    full S4D model with d_inner channels.
+
+    Training: FFT convolution over all E×H expert-channel pairs at once,
+    then weight outputs by routing scores and sum across experts.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        d_state: int = 64,
+        expand: int = 2,
+        num_experts: int = 4,
+        dropout: float = 0.0,
+        dt_min: float = 1e-4,
+        dt_max: float = 1e-1,
+        layer_idx=None,
+        learnable_A_imag: bool = True,
+        **kwargs,
+    ):
+        super().__init__()
+        assert d_state % 2 == 0, "d_state must be even for complex conjugate pairs"
+        self.d_model = d_model
+        self.d_state = d_state
+        self.d_inner = expand * d_model
+        self.n2 = d_state // 2  # complex conjugate pairs per channel
+        self.layer_idx = layer_idx
+        self.num_experts = num_experts
+
+        H, N2, E = self.d_inner, self.n2, num_experts
+
+        self.router = TokenTopKRouter(H, E, 1)
+
+        # Input expands to (x, z) like Mamba; z serves as the GLU gate
+        self.in_proj = nn.Linear(d_model, 2 * H, bias=False)
+        self.out_proj = nn.Linear(H, d_model, bias=False)
+
+        # SSM parameters: (E, H, ...) — one independent set per expert
+        log_dt = torch.rand(E, H) * (math.log(dt_max) - math.log(dt_min)) + math.log(dt_min)
+        self.log_dt = nn.Parameter(log_dt)                           # (E, H)
+
+        log_A_real = torch.log(0.5 * torch.ones(E, H, N2))
+        self.log_A_real = nn.Parameter(log_A_real)                   # (E, H, N2)
+
+        A_imag = math.pi * repeat(torch.arange(N2, dtype=torch.float32), "n -> e h n", e=E, h=H)
+        if learnable_A_imag:
+            self.A_imag = nn.Parameter(A_imag)                       # (E, H, N2)
+        else:
+            self.register_buffer("A_imag", A_imag)
+
+        B = torch.ones(E, H, N2, dtype=torch.cfloat)
+        self.B = nn.Parameter(torch.view_as_real(B))                 # (E, H, N2, 2)
+
+        C = torch.randn(E, H, N2, dtype=torch.cfloat)
+        self.C = nn.Parameter(torch.view_as_real(C))                 # (E, H, N2, 2)
+
+        self.D = nn.Parameter(torch.randn(E, H))                     # (E, H)
+
+        self.act = nn.SiLU()
+        self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
+
+    def _ssm_kernel(self, L: int, chosen_experts: torch.Tensor) -> torch.Tensor:
+        """
+        Compute SSM convolution kernels for all experts via ZOH discretization.
+
+        K[e, h, t] = 2 * Re( sum_n  C[e,h,n] * Bbar[e,h,n] * Abar[e,h,n]^t )
+
+        Returns: (B, H, L) real tensor
+        """
+        dt = torch.exp(self.log_dt)                                   # (E, H)
+        A = -torch.exp(self.log_A_real) + 1j * self.A_imag           # (E, H, N2) complex
+        B = torch.view_as_complex(self.B.contiguous())                # (E, H, N2) complex
+        C = torch.view_as_complex(self.C.contiguous())                # (E, H, N2) complex
+
+        # ZOH discretization
+        dtA = A * dt.unsqueeze(-1)                                    # (E, H, N2)
+        Abar = torch.exp(dtA)                                         # (E, H, N2)
+        A_safe = torch.where(A.abs() < 1e-6, A + 1e-6, A)
+        Bbar = B * (Abar - 1.0) / A_safe                             # (E, H, N2)
+
+        log_Abar = torch.log(Abar + 1e-30)                           # (E, H, N2) complex
+        powers = torch.cumsum(log_Abar[chosen_experts], dim=1)       # (B, L, H, N2)
+
+        CB = (C * Bbar)[chosen_experts]                              # (B, L, H, N2)
+        K = 2.0 * (CB * powers).sum(dim=-1).real.permute(0, 2, 1)    # (B, H, L)
+        return K
+
+    def _fft_conv(self, u: torch.Tensor, K: torch.Tensor) -> torch.Tensor:
+        """
+        Causal linear convolution via FFT.
+        u: (B, E*H, L),  K: (E*H, L)  ->  (B, E*H, L)
+        """
+        L = u.shape[-1]
+        fft_len = 2 * L  # zero-pad to avoid circular wrap-around
+        U = torch.fft.rfft(u.float(), n=fft_len)
+        K_ = torch.fft.rfft(K.float(), n=fft_len)
+        Y = U * K_
+        return torch.fft.irfft(Y, n=fft_len)[..., :L].to(u.dtype)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        noise_scale: float = 1.0,
+        mixture_temperature: float = 1.0,
+        straight_through: bool = True,
+        uniform_topk_eps: float = 0.0,
+        **kwargs,
+    ):
+        """
+        hidden_states: (B, L, D)
+        Returns: same shape as hidden_states
+        """
+        B, L, _ = hidden_states.shape
+        E, H = self.num_experts, self.d_inner
+
+        # Project to (x, z): x goes through SSM, z gates the output
+        xz = self.in_proj(hidden_states)                              # (B, L, 2*H)
+        x, z = xz.chunk(2, dim=-1)                                   # (B, L, H) each
+        x = x.transpose(1, 2)                                        # (B, H, L)
+
+        alpha, logits = self.router(
+            x,
+            noise_scale=noise_scale,
+            mixture_temperature=mixture_temperature,
+            straight_through=straight_through,
+            uniform_topk_eps=uniform_topk_eps,
+        )  # alpha: (B, L, E)
+
+        chosen_experts = torch.argmax(logits, dim=-1)
+
+        K = self._ssm_kernel(L, chosen_experts)                                       # (E*H, L)
+        y = self._fft_conv(x, K) + self.D[chosen_experts].permute(0, 2, 1) * x
+        y = y * alpha.sum(-1).unsqueeze(1)
+
+        # Weight by routing scores and sum over experts                                      # (B, L, H)
+        y = self.act(y) * torch.sigmoid(z)                           # GLU gate
+        y = self.dropout(y)
+        y = self.out_proj(y) 
+        return y
+
+    def state_size(self, sequence_length: int = 2048) -> int:
+        return self.d_inner * self.d_state * self.num_experts
 
 
-class S4DMoEBlock(nn.Module):
+class S4DMoEv1Block(nn.Module):
     def __init__(
         self, config, residual_in_fp32=True, norm_epsilon=1e-5, **factory_kwargs
     ):
         """
-        Block wrapping S4DMoE with LayerNorm and residual connection, mirroring MambaBlock.
+        Block wrapping S4DMoEv1 with LayerNorm and residual connection, mirroring MambaBlock.
 
-        Structure (prenorm):  Add -> LN -> S4DMoE
+        Structure (prenorm):  Add -> LN -> S4DMoEv1
         Returns both hidden_states and residual so the caller can chain blocks.
         """
         super().__init__()
         d_model = config.d_model
         self.residual_in_fp32 = residual_in_fp32
-        self.mixer = S4DMoE(d_model, **factory_kwargs, **config.sequence_mixer.kwargs)
+        self.mixer = S4DMoEv1(d_model, **factory_kwargs, **config.sequence_mixer.kwargs)
+        self.norm = nn.LayerNorm(d_model, eps=norm_epsilon)
+
+    def forward(
+        self, hidden_states: Tensor, residual: Optional[Tensor] = None
+    ):
+        """
+        hidden_states: the sequence to the encoder layer (required).
+        residual: hidden_states = Mixer(LN(residual))
+        """
+        residual = (hidden_states + residual) if residual is not None else hidden_states
+        hidden_states = self.norm(residual.to(dtype=self.norm.weight.dtype))
+        if self.residual_in_fp32:
+            residual = residual.to(torch.float32)
+        hidden_states = self.mixer(hidden_states)
+        return hidden_states, residual
+
+
+class S4DMoEv2Block(nn.Module):
+    def __init__(
+        self, config, residual_in_fp32=True, norm_epsilon=1e-5, **factory_kwargs
+    ):
+        """
+        Block wrapping S4DMoEv2 with LayerNorm and residual connection, mirroring MambaBlock.
+
+        Structure (prenorm):  Add -> LN -> S4DMoEv2
+        Returns both hidden_states and residual so the caller can chain blocks.
+        """
+        super().__init__()
+        d_model = config.d_model
+        self.residual_in_fp32 = residual_in_fp32
+        self.mixer = S4DMoEv2(d_model, **factory_kwargs, **config.sequence_mixer.kwargs)
         self.norm = nn.LayerNorm(d_model, eps=norm_epsilon)
 
     def forward(

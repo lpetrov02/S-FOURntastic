@@ -113,7 +113,7 @@ class ModelConfig(BaseConfig):
     block_type: Literal[
         "TransformerBlock",
         "MambaBlock", "Mamba2Block",
-        "S4DBlock", "S4DMoEBlock", "TokenRoutedS4DBlock"] = "TransformerBlock"
+        "S4DBlock", "S4DMoEv1Block", "S4DMoEv2Block", "TokenRoutedS4DBlock"] = "TransformerBlock"
     name: str = "default"
 
 class LoggerConfig(BaseConfig):

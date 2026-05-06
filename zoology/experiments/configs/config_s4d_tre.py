@@ -53,7 +53,9 @@ for difficulty in difficulty_options:
                                 "d_state": 16,
                                 "n_experts": NEXP,
                                 "top_k": TOPK,
-                                "use_state_for_routing": False,
+                                "use_state_for_routing": True,
+                                "num_conv_blocks": 3,
+                                "pre_routing_kernel_size": 7,
                             },
                         ),
                         state_mixer = ModuleConfig(
@@ -66,7 +68,7 @@ for difficulty in difficulty_options:
                     ),
                     logger=LoggerConfig(
                         name="tensorboard",
-                        project_name=f"Zero_MoE_S4D_{NEXP}A{TOPK}_{n}_layers__lr_{lr}__difficulty_{difficulty}",
+                        project_name=f"Tre_MoE_S4D_{NEXP}A{TOPK}_{n}_layers__lr_{lr}__difficulty_{difficulty}",
                     )
                 )
                 configs.append(config)
