@@ -82,13 +82,34 @@ class TokenTopKRouter(nn.Module):
     Token-level router.
     Input:  u of shape (B, H, L)
     Output: alpha/logits of shape (B, L, E)
+
+    lb_strategy: "none" | "lbl" | "aux_free"
+      - "lbl":      adds Switch-Transformer-style load-balanced auxiliary loss
+      - "aux_free": updates a per-expert bias buffer to steer routing without
+                    any gradient-based loss term
     """
 
-    def __init__(self, d_model: int, n_experts: int, top_k: int):
+    def __init__(
+        self,
+        d_model: int,
+        n_experts: int,
+        top_k: int,
+        lb_strategy: str = "none",
+        lb_coef: float = 0.01,
+        aux_free_bias_step: float = 1e-3,
+    ):
         super().__init__()
         self.n_experts = n_experts
         self.top_k = top_k
+        self.lb_strategy = lb_strategy
+        self.lb_coef = lb_coef
+        self.aux_free_bias_step = aux_free_bias_step
         self.proj = nn.Conv1d(d_model, n_experts, kernel_size=1)
+
+        if lb_strategy == "aux_free":
+            self.register_buffer("expert_bias", torch.zeros(n_experts))
+
+        self.last_lb_loss = None
 
     def forward(
         self,
@@ -106,16 +127,22 @@ class TokenTopKRouter(nn.Module):
         """
         logits = self.proj(u).transpose(1, 2)  # (B, L, E)
 
+        # aux_free: bias selection scores only; weights come from unbiased logits
+        if self.lb_strategy == "aux_free":
+            selection_logits = logits + self.expert_bias
+        else:
+            selection_logits = logits
+
         # Selection scores: noisy during training, deterministic at eval
         if self.training:
-            noisy_logits = logits + noise_scale * sample_gumbel_like(logits)
+            noisy_logits = selection_logits + noise_scale * sample_gumbel_like(selection_logits)
         else:
-            noisy_logits = logits
+            noisy_logits = selection_logits
 
         k = min(self.top_k, self.n_experts)
         _, top_idx = noisy_logits.topk(k, dim=-1)  # (B, L, K)
 
-        # Mixture weights computed only over selected experts
+        # Mixture weights computed from unbiased logits
         selected_logits = logits.gather(-1, top_idx)  # (B, L, K)
 
         tau = max(float(mixture_temperature), 1e-4)
@@ -128,17 +155,51 @@ class TokenTopKRouter(nn.Module):
         hard = torch.zeros_like(logits).scatter_(-1, top_idx, top_alpha)  # (B, L, E)
 
         if straight_through:
-            # Dense surrogate gradient, sparse forward
+            # Dense surrogate gradient, sparse forward — always from unbiased logits
             soft_full = F.softmax(logits / tau, dim=-1)
             alpha = hard + soft_full - soft_full.detach()
         else:
             alpha = hard
+
+        if self.training:
+            B, L_seq = logits.shape[0], logits.shape[1]
+            n_tokens = B * L_seq
+            dispatch = torch.zeros(
+                self.n_experts, device=logits.device, dtype=logits.dtype
+            )
+            dispatch.scatter_add_(
+                0,
+                top_idx.reshape(-1),
+                torch.ones(n_tokens * k, device=logits.device, dtype=logits.dtype),
+            )
+            f = dispatch / (n_tokens * k)  # (E,) fraction dispatched per expert
+
+            if self.lb_strategy == "lbl":
+                # P_i: mean soft routing probability (differentiable)
+                P = F.softmax(logits / tau, dim=-1).mean(dim=(0, 1))  # (E,)
+                self.last_lb_loss = self.lb_coef * self.n_experts * (f.detach() * P).sum()
+            else:
+                self.last_lb_loss = None
+
+            if self.lb_strategy == "aux_free":
+                with torch.no_grad():
+                    self.expert_bias.add_(
+                        -self.aux_free_bias_step
+                        * (f.float() - 1.0 / self.n_experts).sign()
+                    )
+        else:
+            self.last_lb_loss = None
 
         with torch.no_grad():
             probs = F.softmax(logits.float(), dim=-1)  # (B, L, E)
             self.last_entropy = -(probs * torch.log(probs + 1e-9)).sum(-1).mean().item()
 
         return alpha, logits
+
+    def get_auxiliary_loss(self):
+        if self.lb_strategy == "lbl" and self.last_lb_loss is not None:
+            return self.last_lb_loss
+        return self.proj.weight.new_zeros(())
 
 
 class S4DMoEv1(nn.Module):
@@ -163,6 +224,9 @@ class S4DMoEv1(nn.Module):
         dt_max: float = 1e-1,
         layer_idx=None,
         learnable_A_imag: bool = True,
+        lb_strategy: str = "none",
+        lb_coef: float = 0.01,
+        aux_free_bias_step: float = 1e-3,
         **kwargs,
     ):
         super().__init__()
@@ -177,7 +241,7 @@ class S4DMoEv1(nn.Module):
 
         H, N2, E = self.d_inner, self.n2, num_experts
 
-        self.router = TokenTopKRouter(H, E, top_k)
+        self.router = TokenTopKRouter(H, E, top_k, lb_strategy, lb_coef, aux_free_bias_step)
 
         # Input expands to (x, z) like Mamba; z serves as the GLU gate
         self.in_proj = nn.Linear(d_model, 2 * H, bias=False)
@@ -322,6 +386,9 @@ class S4DMoEv2(nn.Module):
         dt_max: float = 1e-1,
         layer_idx=None,
         learnable_A_imag: bool = True,
+        lb_strategy: str = "none",
+        lb_coef: float = 0.01,
+        aux_free_bias_step: float = 1e-3,
         **kwargs,
     ):
         super().__init__()
@@ -335,7 +402,7 @@ class S4DMoEv2(nn.Module):
 
         H, N2, E = self.d_inner, self.n2, num_experts
 
-        self.router = TokenTopKRouter(H, E, 1)
+        self.router = TokenTopKRouter(H, E, 1, lb_strategy, lb_coef, aux_free_bias_step)
 
         # Input expands to (x, z) like Mamba; z serves as the GLU gate
         self.in_proj = nn.Linear(d_model, 2 * H, bias=False)
@@ -424,7 +491,7 @@ class S4DMoEv2(nn.Module):
         x, z = xz.chunk(2, dim=-1)                                   # (B, L, H) each
         x = x.transpose(1, 2)                                        # (B, H, L)
 
-        alpha, logits = self.router(
+        alpha, _ = self.router(
             x,
             noise_scale=noise_scale,
             mixture_temperature=mixture_temperature,
@@ -432,7 +499,7 @@ class S4DMoEv2(nn.Module):
             uniform_topk_eps=uniform_topk_eps,
         )  # alpha: (B, L, E)
 
-        chosen_experts = torch.argmax(logits, dim=-1)
+        chosen_experts = alpha.argmax(dim=-1)  # consistent with router's actual selection
 
         K = self._ssm_kernel(L, chosen_experts)                                       # (E*H, L)
         y = self._fft_conv(x, K) + self.D[chosen_experts].permute(0, 2, 1) * x

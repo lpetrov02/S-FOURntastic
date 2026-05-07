@@ -82,16 +82,34 @@ class TokenTopKRouter(nn.Module):
     Token-level router.
     Input:  u of shape (B, H, L)
     Output: alpha/logits of shape (B, L, E)
+
+    lb_strategy: "none" | "aux_free"
+      LBL loss is handled by the parent TokenRoutedS4D over the full sequence.
+      This router only runs the aux_free bias update per chunk.
     """
 
-    def __init__(self, d_model: int, n_experts: int, top_k: int, d_state: int = None, use_state_for_routing: bool = False):
+    def __init__(
+        self,
+        d_model: int,
+        n_experts: int,
+        top_k: int,
+        d_state: int = None,
+        use_state_for_routing: bool = False,
+        lb_strategy: str = "none",
+        aux_free_bias_step: float = 1e-3,
+    ):
         super().__init__()
         self.n_experts = n_experts
         self.top_k = top_k
+        self.lb_strategy = lb_strategy
+        self.aux_free_bias_step = aux_free_bias_step
 
         self.use_state = use_state_for_routing
         input_dim = d_model + d_state if self.use_state else d_model
         self.proj = nn.Conv1d(input_dim, n_experts, kernel_size=1)
+
+        if lb_strategy == "aux_free":
+            self.register_buffer("expert_bias", torch.zeros(n_experts))
 
     def forward(
         self,
@@ -116,16 +134,22 @@ class TokenTopKRouter(nn.Module):
 
         logits = self.proj(u).transpose(1, 2)  # (B, L, E)
 
+        # aux_free: bias selection scores only; weights come from unbiased logits
+        if self.lb_strategy == "aux_free":
+            selection_logits = logits + self.expert_bias
+        else:
+            selection_logits = logits
+
         # Selection scores: noisy during training, deterministic at eval
         if self.training:
-            noisy_logits = logits + noise_scale * sample_gumbel_like(logits)
+            noisy_logits = selection_logits + noise_scale * sample_gumbel_like(selection_logits)
         else:
-            noisy_logits = logits
+            noisy_logits = selection_logits
 
         k = min(self.top_k, self.n_experts)
         _, top_idx = noisy_logits.topk(k, dim=-1)  # (B, L, K)
 
-        # Mixture weights computed only over selected experts
+        # Mixture weights from unbiased logits
         selected_logits = logits.gather(-1, top_idx)  # (B, L, K)
 
         tau = max(float(mixture_temperature), 1e-4)
@@ -138,7 +162,7 @@ class TokenTopKRouter(nn.Module):
         hard = torch.zeros_like(logits).scatter_(-1, top_idx, top_alpha)  # (B, L, E)
 
         if straight_through:
-            # Dense surrogate gradient, sparse forward
+            # Dense surrogate gradient, sparse forward — always from unbiased logits
             soft_full = F.softmax(logits / tau, dim=-1)
             alpha = hard + soft_full - soft_full.detach()
         else:
@@ -146,6 +170,27 @@ class TokenTopKRouter(nn.Module):
         
         with torch.no_grad():
             probs = F.softmax(logits.float(), dim=-1)  # (B, L, E)
+            self.last_entropy = -(probs * torch.log(probs + 1e-9)).sum(-1).mean().item()
+
+        if self.training and self.lb_strategy == "aux_free":
+            with torch.no_grad():
+                B, L_seq = logits.shape[0], logits.shape[1]
+                n_tokens = B * L_seq
+                dispatch = torch.zeros(
+                    self.n_experts, device=logits.device, dtype=torch.float32
+                )
+                dispatch.scatter_add_(
+                    0,
+                    top_idx.reshape(-1),
+                    torch.ones(n_tokens * k, device=logits.device, dtype=torch.float32),
+                )
+                f = dispatch / (n_tokens * k)
+                self.expert_bias.add_(
+                    -self.aux_free_bias_step * (f - 1.0 / self.n_experts).sign()
+                )
+
+        with torch.no_grad():
+            probs = F.softmax(logits.float(), dim=-1)
             self.last_entropy = -(probs * torch.log(probs + 1e-9)).sum(-1).mean().item()
 
         return alpha, logits
@@ -239,6 +284,9 @@ class TokenRoutedS4D(nn.Module):
         use_state_for_routing: bool = False,
         pre_routing_kernel_size: int = 4,
         num_conv_blocks: int = 0,
+        lb_strategy: str = "none",
+        lb_coef: float = 0.01,
+        aux_free_bias_step: float = 1e-3,
     ):
         super().__init__()
 
@@ -251,6 +299,9 @@ class TokenRoutedS4D(nn.Module):
         self.transposed = transposed
         self.n_experts = n_experts
         self.top_k = top_k
+        self.lb_strategy = lb_strategy
+        self.lb_coef = lb_coef
+        self.last_lb_loss = None
 
         self.n_convs = num_conv_blocks
         self.kernel_size = pre_routing_kernel_size
@@ -258,7 +309,7 @@ class TokenRoutedS4D(nn.Module):
         E, H, N2 = n_experts, d_model, self.n2
 
         # Router
-        self.router = TokenTopKRouter(H, E, top_k, N2, use_state_for_routing)
+        self.router = TokenTopKRouter(H, E, top_k, N2, use_state_for_routing, lb_strategy, aux_free_bias_step)
         self.conv = nn.Sequential(
             *[ConvBlock(d_model, kernel_size=self.kernel_size) for _ in range(self.n_convs)]
         ) if self.n_convs > 0 else nn.Identity()
@@ -481,6 +532,7 @@ class TokenRoutedS4D(nn.Module):
 
         outputs = []
         accum_logits = []
+        accum_alpha = []
         for start in range(0, L, chunk_size):
             end = min(start + chunk_size, L)
             u_chunk = u[:, :, start:end].contiguous()          # (B, H, T)
@@ -495,6 +547,7 @@ class TokenRoutedS4D(nn.Module):
                 state=state,
             )
             accum_logits.append(logits)
+            accum_alpha.append(alpha)
 
             y_chunk, state = self._scan_chunk(
                 u_chunk=u_chunk,
@@ -506,7 +559,29 @@ class TokenRoutedS4D(nn.Module):
 
             y_chunk = self._dynamic_output_projection(y_chunk, alpha)
             outputs.append(y_chunk)
-        logits = torch.cat(accum_logits, dim=1)
+        full_logits = torch.cat(accum_logits, dim=1)   # (B, L, E)
+        full_alpha = torch.cat(accum_alpha, dim=1)     # (B, L, E)
+
+        # LBL: compute from full-sequence routing data so all chunks contribute equally
+        if self.training and self.lb_strategy == "lbl":
+            tau = max(float(mixture_temperature), 1e-4)
+            k = min(self.top_k, self.n_experts)
+            Bsz, L_full = full_logits.shape[0], full_logits.shape[1]
+            n_tokens = Bsz * L_full
+            top_idx = full_alpha.topk(k, dim=-1).indices          # (B, L, K)
+            dispatch = torch.zeros(
+                self.n_experts, device=full_logits.device, dtype=full_logits.dtype
+            )
+            dispatch.scatter_add_(
+                0,
+                top_idx.reshape(-1),
+                torch.ones(n_tokens * k, device=full_logits.device, dtype=full_logits.dtype),
+            )
+            f = dispatch / (n_tokens * k)
+            P = F.softmax(full_logits / tau, dim=-1).mean(dim=(0, 1))  # (E,)
+            self.last_lb_loss = self.lb_coef * self.n_experts * (f.detach() * P).sum()
+        else:
+            self.last_lb_loss = None
 
         y = torch.cat(outputs, dim=-1)  # (B, H, L)
 
@@ -514,14 +589,19 @@ class TokenRoutedS4D(nn.Module):
             y = y.transpose(-1, -2).contiguous()  # back to (B, L, H)
 
         aux = {
-            "routing_weights": alpha,
-            "routing_logits": logits,
+            "routing_weights": full_alpha,
+            "routing_logits": full_logits,
         }
         self.last_router_aux = aux
 
         if return_router_aux:
             return y, aux
         return y
+
+    def get_auxiliary_loss(self):
+        if self.lb_strategy == "lbl" and self.last_lb_loss is not None:
+            return self.last_lb_loss
+        return self.log_dt.new_zeros(())
     
     def state_size(self, sequence_length: int = 2048) -> int:
         return self.h * self.n * self.n_experts
