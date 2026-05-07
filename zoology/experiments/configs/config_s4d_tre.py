@@ -54,7 +54,7 @@ for difficulty in difficulty_options:
                                 "n_experts": NEXP,
                                 "top_k": TOPK,
                                 "use_state_for_routing": True,
-                                "num_conv_blocks": 3,
+                                "num_conv_blocks": 0,
                                 "pre_routing_kernel_size": 7,
                             },
                         ),

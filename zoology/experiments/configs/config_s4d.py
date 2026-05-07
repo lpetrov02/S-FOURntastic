@@ -9,6 +9,7 @@ MODEL_DIM = 256
 lr_options = [3e-4]
 difficulty_options = [4]
 n_layers = [2]
+state_dim = [128, 64, 16]
 dataset_size = [100_000]
 
 
@@ -17,52 +18,53 @@ for difficulty in difficulty_options:
     for n in n_layers:
         for lr in lr_options:
             for train_size in dataset_size:
-                batch_size = 128 if n <= 4 else 64
-                config = TrainConfig(
-                    learning_rate=lr,
-                    max_epochs=30,
-                    weight_decay=0.1,
-                    data=DataConfig(
-                        train_configs=[
-                            MQARConfig(
-                                num_examples=train_size,
-                                vocab_size=VOCAB_SIZE,
-                                input_seq_len=MAX_LENGTH,
-                                num_kv_pairs=difficulty,
-                            )
-                        ],
-                        test_configs=[
-                            MQARConfig(
-                                num_examples=10_000,
-                                vocab_size=VOCAB_SIZE,
-                                input_seq_len=MAX_LENGTH,
-                                num_kv_pairs=difficulty
-                            )
-                        ],
-                        train_batch_size=batch_size,
-                        test_batch_size=batch_size,
-                    ),
-                    model=ModelConfig(
-                        vocab_size=VOCAB_SIZE,
-                        max_position_embeddings=MAX_LENGTH,
-                        sequence_mixer=ModuleConfig(
-                            name="zoology.mixers.s4d_base.S4D",
-                            kwargs={
-                                "dropout": 0.1,
-                                "d_state": 16,
-                            },
+                for state in state_dim:
+                    batch_size = 128 if n <= 4 else 64
+                    config = TrainConfig(
+                        learning_rate=lr,
+                        max_epochs=30,
+                        weight_decay=0.1,
+                        data=DataConfig(
+                            train_configs=[
+                                MQARConfig(
+                                    num_examples=train_size,
+                                    vocab_size=VOCAB_SIZE,
+                                    input_seq_len=MAX_LENGTH,
+                                    num_kv_pairs=difficulty,
+                                )
+                            ],
+                            test_configs=[
+                                MQARConfig(
+                                    num_examples=10_000,
+                                    vocab_size=VOCAB_SIZE,
+                                    input_seq_len=MAX_LENGTH,
+                                    num_kv_pairs=difficulty
+                                )
+                            ],
+                            train_batch_size=batch_size,
+                            test_batch_size=batch_size,
                         ),
-                        state_mixer = ModuleConfig(
-                            name="zoology.mixers.mlp.MLP", 
-                            kwargs={"hidden_mult": 2}
+                        model=ModelConfig(
+                            vocab_size=VOCAB_SIZE,
+                            max_position_embeddings=MAX_LENGTH,
+                            sequence_mixer=ModuleConfig(
+                                name="zoology.mixers.s4d_base.S4D",
+                                kwargs={
+                                    "dropout": 0.1,
+                                    "d_state": state,
+                                },
+                            ),
+                            state_mixer = ModuleConfig(
+                                name="zoology.mixers.mlp.MLP", 
+                                kwargs={"hidden_mult": 2}
+                            ),
+                            d_model=MODEL_DIM,
+                            block_type="S4DBlock",
+                            n_layers=n,
                         ),
-                        d_model=MODEL_DIM,
-                        block_type="S4DBlock",
-                        n_layers=n,
-                    ),
-                    logger=LoggerConfig(
-                        name="tensorboard",
-                        project_name=f"S4D_{n}_layers__lr_{lr}__difficulty_{difficulty}",
+                        logger=LoggerConfig(
+                            name="tensorboard",
+                            project_name=f"S4D_D{state}_{n}_layers__lr_{lr}__difficulty_{difficulty}",
+                        )
                     )
-                )
-                configs.append(config)
+                    configs.append(config)

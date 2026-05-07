@@ -143,6 +143,10 @@ class TokenTopKRouter(nn.Module):
             alpha = hard + soft_full - soft_full.detach()
         else:
             alpha = hard
+        
+        with torch.no_grad():
+            probs = F.softmax(logits.float(), dim=-1)  # (B, L, E)
+            self.last_entropy = -(probs * torch.log(probs + 1e-9)).sum(-1).mean().item()
 
         return alpha, logits
 
