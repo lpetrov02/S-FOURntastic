@@ -4,12 +4,12 @@ from zoology.data.multiquery_ar import MQARConfig
 
 VOCAB_SIZE = 8192
 MAX_LENGTH = 512
-MODEL_DIM = 512
+MODEL_DIM = 256
 
 lr_options = [3e-4]
 difficulty_options = [4]
 n_layers = [2]
-state_dim = [16]
+state_dim = [16, 32]
 dataset_size = [100_000]
 
 
@@ -64,7 +64,7 @@ for difficulty in difficulty_options:
                         ),
                         logger=LoggerConfig(
                             name="tensorboard",
-                            project_name=f"S4D_512_D{state}_{n}_layers__lr_{lr}__difficulty_{difficulty}",
+                            project_name=f"baselines_v1/S4D_256_D{state}_{n}_layers__lr_{lr}__difficulty_{difficulty}",
                         )
                     )
                     configs.append(config)

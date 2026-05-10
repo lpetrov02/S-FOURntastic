@@ -4,13 +4,13 @@ from zoology.data.multiquery_ar import MQARConfig
 
 VOCAB_SIZE = 8192
 MAX_LENGTH = 512
-MODEL_DIM = 512
+MODEL_DIM = 256
 
 lr_options = [3e-4]
 difficulty_options = [4]
 n_layers = [2]
-state_dim = [16]
 dataset_size = [100_000]
+heads = [1, 4]
 
 
 configs = []
@@ -18,7 +18,7 @@ for difficulty in difficulty_options:
     for n in n_layers:
         for lr in lr_options:
             for train_size in dataset_size:
-                for state in state_dim:
+                for num_heads in heads:
                     batch_size = 128 if n <= 4 else 64
                     config = TrainConfig(
                         learning_rate=lr,
@@ -48,23 +48,23 @@ for difficulty in difficulty_options:
                             vocab_size=VOCAB_SIZE,
                             max_position_embeddings=MAX_LENGTH,
                             sequence_mixer=ModuleConfig(
-                                name="zoology.mixers.s4d_base.S4D",
+                                name="zoology.mixers.attention.MHA",
                                 kwargs={
                                     "dropout": 0.1,
-                                    "d_state": state,
-                                },
+                                    "num_heads": num_heads,
+                                }
                             ),
                             state_mixer = ModuleConfig(
                                 name="zoology.mixers.mlp.MLP", 
                                 kwargs={"hidden_mult": 2}
                             ),
                             d_model=MODEL_DIM,
-                            block_type="S4DBlock",
+                            block_type="TransformerBlock",
                             n_layers=n,
                         ),
                         logger=LoggerConfig(
                             name="tensorboard",
-                            project_name=f"S4D_512_D{state}_{n}_layers__lr_{lr}__difficulty_{difficulty}",
+                            project_name=f"baselines_v1/Attention_h{num_heads}_{n}_layers__lr_{lr}__difficulty_{difficulty}",
                         )
                     )
                     configs.append(config)

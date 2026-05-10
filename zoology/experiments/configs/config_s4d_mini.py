@@ -4,7 +4,7 @@ from zoology.data.multiquery_ar import MQARConfig
 
 VOCAB_SIZE = 8192
 MAX_LENGTH = 512
-MODEL_DIM = 512
+MODEL_DIM = 256
 
 lr_options = [3e-4]
 difficulty_options = [4]
@@ -48,7 +48,7 @@ for difficulty in difficulty_options:
                             vocab_size=VOCAB_SIZE,
                             max_position_embeddings=MAX_LENGTH,
                             sequence_mixer=ModuleConfig(
-                                name="zoology.mixers.s4d_base.S4D",
+                                name="zoology.mixers.s4d_moe.S4DMoEmini",
                                 kwargs={
                                     "dropout": 0.1,
                                     "d_state": state,
@@ -59,12 +59,12 @@ for difficulty in difficulty_options:
                                 kwargs={"hidden_mult": 2}
                             ),
                             d_model=MODEL_DIM,
-                            block_type="S4DBlock",
+                            block_type="S4DMoEminiBlock",
                             n_layers=n,
                         ),
                         logger=LoggerConfig(
                             name="tensorboard",
-                            project_name=f"S4D_512_D{state}_{n}_layers__lr_{lr}__difficulty_{difficulty}",
+                            project_name=f"S4DMoEmini_256_D{state}_{n}_layers__lr_{lr}__difficulty_{difficulty}",
                         )
                     )
                     configs.append(config)

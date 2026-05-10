@@ -4,12 +4,12 @@ from zoology.data.multiquery_ar import MQARConfig
 
 VOCAB_SIZE = 8192
 MAX_LENGTH = 512
-MODEL_DIM = 512
+MODEL_DIM = 256
 
 lr_options = [3e-4]
 difficulty_options = [4]
+experts_setups = [(8, 4), (8, 8)]
 n_layers = [2]
-state_dim = [16]
 dataset_size = [100_000]
 
 
@@ -18,8 +18,8 @@ for difficulty in difficulty_options:
     for n in n_layers:
         for lr in lr_options:
             for train_size in dataset_size:
-                for state in state_dim:
-                    batch_size = 128 if n <= 4 else 64
+                for num_experts, top_k in experts_setups:
+                    batch_size = 64
                     config = TrainConfig(
                         learning_rate=lr,
                         max_epochs=30,
@@ -48,10 +48,12 @@ for difficulty in difficulty_options:
                             vocab_size=VOCAB_SIZE,
                             max_position_embeddings=MAX_LENGTH,
                             sequence_mixer=ModuleConfig(
-                                name="zoology.mixers.s4d_base.S4D",
+                                name="zoology.mixers.s4d_base.S4DMoEv2",
                                 kwargs={
                                     "dropout": 0.1,
-                                    "d_state": state,
+                                    "d_state": 16,
+                                    "num_experts": num_experts,
+                                    "top_k": top_k,
                                 },
                             ),
                             state_mixer = ModuleConfig(
@@ -59,12 +61,12 @@ for difficulty in difficulty_options:
                                 kwargs={"hidden_mult": 2}
                             ),
                             d_model=MODEL_DIM,
-                            block_type="S4DBlock",
+                            block_type="S4DMoEv2Block",
                             n_layers=n,
                         ),
                         logger=LoggerConfig(
                             name="tensorboard",
-                            project_name=f"S4D_512_D{state}_{n}_layers__lr_{lr}__difficulty_{difficulty}",
+                            project_name=f"S4D_v2/model_v2_E{num_experts}A{top_k}_L{n}__lr_{lr}__difficulty_{difficulty}",
                         )
                     )
                     configs.append(config)
