@@ -214,6 +214,17 @@ class Trainer:
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
 
+            router_modules = [
+                (n, m) for n, m in self.model.named_modules()
+                if hasattr(m, "last_entropy")
+            ]
+            entropy_logs = {}
+            if router_modules:
+                entropies = [m.last_entropy for _, m in router_modules]
+                entropy_logs["train/router_entropy/mean"] = sum(entropies) / len(entropies)
+                for name, module in router_modules:
+                    entropy_logs[f"train/router_entropy/{name}"] = module.last_entropy
+
             iterator.set_postfix({
                 "loss": loss.item(),
                 "noise": round(self.current_noise_scale, 4),
@@ -226,6 +237,7 @@ class Trainer:
                 "train/uniform_topk_eps": self.uniform_topk_eps,
                 "epoch": epoch_idx,
                 "step": self.global_step,
+                **entropy_logs,
             })
 
             self.global_step += 1

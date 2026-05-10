@@ -5,7 +5,6 @@ from zoology.data.multiquery_ar import MQARConfig
 VOCAB_SIZE = 8192
 MAX_LENGTH = 512
 MODEL_DIM = 256
-NEXP, TOPK = 8, 2
 
 lr_options = [3e-4]
 difficulty_options = [4]
@@ -18,7 +17,7 @@ for difficulty in difficulty_options:
     for n in n_layers:
         for lr in lr_options:
             for train_size in dataset_size:
-                batch_size = 32 if n <= 4 else 16
+                batch_size = 128 if n <= 4 else 64
                 config = TrainConfig(
                     learning_rate=lr,
                     max_epochs=30,
@@ -47,28 +46,23 @@ for difficulty in difficulty_options:
                         vocab_size=VOCAB_SIZE,
                         max_position_embeddings=MAX_LENGTH,
                         sequence_mixer=ModuleConfig(
-                            name="zoology.mixers.s4d_base.TokenRoutedS4D",
+                            name="zoology.mixers.attention.MHA",
                             kwargs={
                                 "dropout": 0.1,
-                                "d_state": 16,
-                                "n_experts": NEXP,
-                                "top_k": TOPK,
-                                "use_state_for_routing": True,
-                                "num_conv_blocks": 0,
-                                "pre_routing_kernel_size": 7,
-                            },
+                                "num_heads": 1,
+                            }
                         ),
                         state_mixer = ModuleConfig(
                             name="zoology.mixers.mlp.MLP", 
                             kwargs={"hidden_mult": 2}
                         ),
                         d_model=MODEL_DIM,
-                        block_type="TokenRoutedS4DBlock",
+                        block_type="TransformerBlock",
                         n_layers=n,
                     ),
                     logger=LoggerConfig(
                         name="tensorboard",
-                        project_name=f"Tre_MoE_S4D_{NEXP}A{TOPK}_{n}_layers__lr_{lr}__difficulty_{difficulty}",
+                        project_name=f"baselines_v1/Attention_h1_{n}_layers__lr_{lr}__difficulty_{difficulty}",
                     )
                 )
                 configs.append(config)

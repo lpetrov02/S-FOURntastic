@@ -233,6 +233,9 @@ class LMBackbone(nn.Module):
         elif config.block_type == "Mamba2Block": 
             from zoology.mixers.mamba2 import Mamba2Block
             block_cls = Mamba2Block
+        elif config.block_type == "FantasticV1Block": 
+            from zoology.mixers.fantastic import FantasticV1Block
+            block_cls = FantasticV1Block
         elif config.block_type == "S4DBlock":
             from zoology.mixers.s4d_base import S4DBlock
             block_cls = S4DBlock
@@ -242,6 +245,15 @@ class LMBackbone(nn.Module):
         elif config.block_type == "S4DMoEv2Block":
             from zoology.mixers.s4d_moe import S4DMoEv2Block
             block_cls = S4DMoEv2Block
+        elif config.block_type == "S4DMoEv3Block":
+            from zoology.mixers.s4d_moe_exp import S4DMoEv3Block
+            block_cls = S4DMoEv3Block
+        elif config.block_type == "S4DMoEv4Block":
+            from zoology.mixers.s4d_moe_exp import S4DMoEv4Block
+            block_cls = S4DMoEv4Block
+        elif config.block_type == "S4DMoEminiBlock":
+            from zoology.mixers.s4d_moe import S4DMoEminiBlock
+            block_cls = S4DMoEminiBlock
         elif config.block_type == "TokenRoutedS4DBlock":
             from zoology.mixers.s4d import TokenRoutedS4DBlock
             block_cls = TokenRoutedS4DBlock
@@ -285,6 +297,10 @@ def _compute_state_size(layers, sequence_length: int):
     except:
         Mamba2Block = None
     try:
+        from zoology.mixers.fantastic import FantasticV1Block
+    except:
+        FantasticV1Block = None
+    try:
         from zoology.mixers.s4d_base import S4DBlock
     except:
         S4DBlock = None
@@ -300,18 +316,37 @@ def _compute_state_size(layers, sequence_length: int):
         from zoology.mixers.s4d_moe import S4DMoEv2Block
     except:
         S4DMoEv2Block = None
+    try:
+        from zoology.mixers.s4d_moe_exp import S4DMoEv3Block
+    except:
+        S4DMoEv3Block = None
+    try:
+        from zoology.mixers.s4d_moe_exp import S4DMoEv4Block
+    except:
+        S4DMoEv4Block = None
+    try:
+        from zoology.mixers.s4d_moe import S4DMoEminiBlock
+    except:
+        S4DMoEminiBlock = None
     state_size = 0
     for layer in layers:
-        print(layer)
         if MambaBlock and isinstance(layer, MambaBlock):
             mixer = layer.mixer
         elif Mamba2Block and isinstance(layer, Mamba2Block):
+            mixer = layer.mixer
+        elif FantasticV1Block and isinstance(layer, FantasticV1Block):
             mixer = layer.mixer
         elif S4DBlock and isinstance(layer, S4DBlock):
             mixer = layer.mixer
         elif S4DMoEv1Block and isinstance(layer, S4DMoEv1Block):
             mixer = layer.mixer
         elif S4DMoEv2Block and isinstance(layer, S4DMoEv2Block):
+            mixer = layer.mixer
+        elif S4DMoEv3Block and isinstance(layer, S4DMoEv3Block):
+            mixer = layer.mixer
+        elif S4DMoEv4Block and isinstance(layer, S4DMoEv4Block):
+            mixer = layer.mixer
+        elif S4DMoEminiBlock and isinstance(layer, S4DMoEminiBlock):
             mixer = layer.mixer
         elif TokenRoutedS4DBlock and isinstance(layer, TokenRoutedS4DBlock):
             mixer = layer.mixer

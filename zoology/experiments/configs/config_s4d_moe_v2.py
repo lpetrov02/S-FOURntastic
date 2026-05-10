@@ -7,8 +7,8 @@ MAX_LENGTH = 512
 MODEL_DIM = 256
 
 lr_options = [3e-4]
-difficulty_options = [4, 64]
-experts_setups = [4, 8]
+difficulty_options = [4]
+experts_setups = [8]
 n_layers = [2]
 dataset_size = [100_000]
 
