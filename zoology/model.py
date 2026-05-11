@@ -236,6 +236,9 @@ class LMBackbone(nn.Module):
         elif config.block_type == "FantasticV1Block": 
             from zoology.mixers.fantastic import FantasticV1Block
             block_cls = FantasticV1Block
+        elif config.block_type == "S4DMoEAttnBlock": 
+            from zoology.mixers.s4d_moe_attn import S4DMoEAttnBlock
+            block_cls = S4DMoEAttnBlock
         elif config.block_type == "S4DBlock":
             from zoology.mixers.s4d_base import S4DBlock
             block_cls = S4DBlock
@@ -301,6 +304,10 @@ def _compute_state_size(layers, sequence_length: int):
     except:
         FantasticV1Block = None
     try:
+        from zoology.mixers.s4d_moe_attn import S4DMoEAttnBlock
+    except:
+        S4DMoeAttnBlock = None
+    try:
         from zoology.mixers.s4d_base import S4DBlock
     except:
         S4DBlock = None
@@ -335,6 +342,8 @@ def _compute_state_size(layers, sequence_length: int):
         elif Mamba2Block and isinstance(layer, Mamba2Block):
             mixer = layer.mixer
         elif FantasticV1Block and isinstance(layer, FantasticV1Block):
+            mixer = layer.mixer
+        elif S4DMoEAttnBlock and isinstance(layer, S4DMoEAttnBlock):
             mixer = layer.mixer
         elif S4DBlock and isinstance(layer, S4DBlock):
             mixer = layer.mixer

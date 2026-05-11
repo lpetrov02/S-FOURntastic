@@ -74,7 +74,7 @@ for difficulty in difficulty_options:
                                 ),
                                 logger=LoggerConfig(
                                     name="tensorboard",
-                                    project_name=f"S4D_v3/fix_model_v3{st}_{num_experts}A{topk}_{n}_layers__lr_{lr}__difficulty_{difficulty}{suffix}",
+                                    project_name=f"S4D_v3/fix2_model_v3{st}_{num_experts}A{topk}_{n}_layers__lr_{lr}__difficulty_{difficulty}{suffix}",
                                 )
                             )
                             configs.append(config)

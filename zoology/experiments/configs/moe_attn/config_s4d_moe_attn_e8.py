@@ -8,9 +8,10 @@ MODEL_DIM = 256
 
 lr_options = [3e-4]
 difficulty_options = [4]
-experts_setups = [(8, 2)]
+expert_state_setups = [(1, 16), (2, 8), (4, 4), (8, 2), (4, 16), (8, 16), (16, 16)]
 n_layers = [2]
-dataset_size = [1_000_000]
+dataset_size = [100_000]
+lbs_options = [None]
 
 
 configs = []
@@ -18,11 +19,11 @@ for difficulty in difficulty_options:
     for n in n_layers:
         for lr in lr_options:
             for train_size in dataset_size:
-                for num_experts, top_k in experts_setups:
-                    batch_size = 128
+                for num_experts, state_dim in expert_state_setups:
+                    batch_size = 32 if n <= 4 else 16
                     config = TrainConfig(
                         learning_rate=lr,
-                        max_epochs=10,
+                        max_epochs=15,
                         weight_decay=0.1,
                         data=DataConfig(
                             train_configs=[
@@ -48,12 +49,11 @@ for difficulty in difficulty_options:
                             vocab_size=VOCAB_SIZE,
                             max_position_embeddings=MAX_LENGTH,
                             sequence_mixer=ModuleConfig(
-                                name="zoology.mixers.fantastic.FantasticV1",
+                                name="zoology.mixers.s4d_moe_attn.S4DMoEAttn",
                                 kwargs={
                                     "dropout": 0.1,
-                                    "d_state": 16,
+                                    "d_state": state_dim,
                                     "num_experts": num_experts,
-                                    "top_k": top_k,
                                 },
                             ),
                             state_mixer = ModuleConfig(
@@ -61,12 +61,12 @@ for difficulty in difficulty_options:
                                 kwargs={"hidden_mult": 2}
                             ),
                             d_model=MODEL_DIM,
-                            block_type="FantasticV1Block",
+                            block_type="S4DMoEAttnBlock",
                             n_layers=n,
                         ),
                         logger=LoggerConfig(
                             name="tensorboard",
-                            project_name=f"fantastic_v1/model_v1_E{num_experts}A{top_k}_L{n}__lr_{lr}__difficulty_{difficulty}",
+                            project_name=f"S4D_attn/model_S{state_dim}_E{num_experts}_{n}_layers__lr_{lr}__difficulty_{difficulty}",
                         )
                     )
                     configs.append(config)

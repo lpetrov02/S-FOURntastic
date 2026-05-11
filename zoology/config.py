@@ -114,7 +114,7 @@ class ModelConfig(BaseConfig):
         "TransformerBlock",
         "MambaBlock", "Mamba2Block",
         "S4DBlock", "S4DMoEv1Block", "S4DMoEv2Block", "S4DMoEv3Block", "S4DMoEv4Block",
-        "FantasticV1Block",
+        "FantasticV1Block", "S4DMoEAttnBlock",
         "S4DMoEminiBlock", "TokenRoutedS4DBlock"] = "TransformerBlock"
     name: str = "default"
 

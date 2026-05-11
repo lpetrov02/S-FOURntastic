@@ -8,9 +8,9 @@ MODEL_DIM = 256
 
 lr_options = [3e-4]
 difficulty_options = [4]
-experts_setups = [(8, 2)]
+experts_setups = [(8, 1), (8, 2)]
 n_layers = [2]
-dataset_size = [1_000_000]
+dataset_size = [100_000]
 
 
 configs = []
@@ -22,7 +22,7 @@ for difficulty in difficulty_options:
                     batch_size = 128
                     config = TrainConfig(
                         learning_rate=lr,
-                        max_epochs=10,
+                        max_epochs=30,
                         weight_decay=0.1,
                         data=DataConfig(
                             train_configs=[
@@ -54,6 +54,7 @@ for difficulty in difficulty_options:
                                     "d_state": 16,
                                     "num_experts": num_experts,
                                     "top_k": top_k,
+                                    "lb_strategy": "aux_free",
                                 },
                             ),
                             state_mixer = ModuleConfig(
@@ -66,7 +67,7 @@ for difficulty in difficulty_options:
                         ),
                         logger=LoggerConfig(
                             name="tensorboard",
-                            project_name=f"fantastic_v1/model_v1_E{num_experts}A{top_k}_L{n}__lr_{lr}__difficulty_{difficulty}",
+                            project_name=f"fantastic_v1/model_v1_E{num_experts}A{top_k}_L{n}__lr_{lr}__difficulty_{difficulty}_AUX",
                         )
                     )
                     configs.append(config)
