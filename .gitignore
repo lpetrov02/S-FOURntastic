@@ -175,5 +175,7 @@ cython_debug/
 # tests
 # /tests
 
-runs/*
-run_summaries/*
+runs*
+run_summaries*
+dumps*
+*view_logs.ipynb*

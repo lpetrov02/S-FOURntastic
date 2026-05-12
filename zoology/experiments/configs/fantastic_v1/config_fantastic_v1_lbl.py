@@ -7,10 +7,10 @@ MAX_LENGTH = 512
 MODEL_DIM = 256
 
 lr_options = [3e-4]
-difficulty_options = [16, 32]
+difficulty_options = [4]
+experts_setups = [(8, 1), (8, 2)]
 n_layers = [2]
-dataset_size = [1_000_000]
-heads = [4]
+dataset_size = [100_000]
 
 
 configs = []
@@ -18,13 +18,11 @@ for difficulty in difficulty_options:
     for n in n_layers:
         for lr in lr_options:
             for train_size in dataset_size:
-                for num_heads in heads:
-                    if num_heads == 1 and difficulty == 4:
-                        continue
-                    batch_size = 256
+                for num_experts, top_k in experts_setups:
+                    batch_size = 128
                     config = TrainConfig(
                         learning_rate=lr,
-                        max_epochs=10,
+                        max_epochs=30,
                         weight_decay=0.1,
                         data=DataConfig(
                             train_configs=[
@@ -50,23 +48,26 @@ for difficulty in difficulty_options:
                             vocab_size=VOCAB_SIZE,
                             max_position_embeddings=MAX_LENGTH,
                             sequence_mixer=ModuleConfig(
-                                name="zoology.mixers.attention.MHA",
+                                name="zoology.mixers.fantastic.FantasticV1",
                                 kwargs={
                                     "dropout": 0.1,
-                                    "num_heads": num_heads,
-                                }
+                                    "d_state": 16,
+                                    "num_experts": num_experts,
+                                    "top_k": top_k,
+                                    "lb_strategy": "lbl",
+                                },
                             ),
                             state_mixer = ModuleConfig(
                                 name="zoology.mixers.mlp.MLP", 
                                 kwargs={"hidden_mult": 2}
                             ),
                             d_model=MODEL_DIM,
-                            block_type="TransformerBlock",
+                            block_type="FantasticV1Block",
                             n_layers=n,
                         ),
                         logger=LoggerConfig(
                             name="tensorboard",
-                            project_name=f"baselines_v1/Attention_h{num_heads}_{n}_layers__lr_{lr}__difficulty_{difficulty}",
+                            project_name=f"fantastic_v1/model_v1_E{num_experts}A{top_k}_L{n}__lr_{lr}__difficulty_{difficulty}_LBL",
                         )
                     )
                     configs.append(config)

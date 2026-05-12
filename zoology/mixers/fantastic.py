@@ -60,6 +60,7 @@ class FantasticV1(nn.Module):
         self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=bias, **factory_kwargs)
         self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
+        self.d_conv = d_conv
         self.conv1d = nn.Conv1d(
             in_channels=self.d_inner,
             out_channels=self.d_inner,
@@ -68,7 +69,7 @@ class FantasticV1(nn.Module):
             groups=self.d_inner,
             padding=d_conv - 1,
             **factory_kwargs,
-        )
+        ) if d_conv > 0 else nn.Identity()
         self.router = TokenTopKRouter(
             self.d_inner,
             self.num_experts,
@@ -132,19 +133,21 @@ class FantasticV1(nn.Module):
         A = -torch.exp(self.A_log.float())  # (d_inner, d_state)
 
         # Compute short convolution
+
         if conv_state is not None:
             conv_state.copy_(x[:, :, -self.d_conv :])  # Update state (B D W)
-        if causal_conv1d_fn is None:
-            x = self.act(self.conv1d(x)[..., :seqlen])
-        else:
-            assert self.activation in ["silu", "swish"]
-            x = causal_conv1d_fn(
-                x,
-                weight=rearrange(self.conv1d.weight, "d 1 w -> d w"),
-                bias=self.conv1d.bias,
-                activation=self.activation,
-                seq_idx=None,
-            )
+        if self.d_conv > 0:
+            if causal_conv1d_fn is None:
+                x = self.act(self.conv1d(x)[..., :seqlen])
+            else:
+                assert self.activation in ["silu", "swish"]
+                x = causal_conv1d_fn(
+                    x,
+                    weight=rearrange(self.conv1d.weight, "d 1 w -> d w"),
+                    bias=self.conv1d.bias,
+                    activation=self.activation,
+                    seq_idx=None,
+                )
 
         alpha, _ = self.router(
             x,
