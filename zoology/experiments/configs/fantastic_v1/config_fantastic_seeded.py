@@ -7,22 +7,20 @@ MAX_LENGTH = 512
 MODEL_DIM = 256
 
 lr_options = [3e-4]
+seeds = [123, 42, 1337, 0, 16]
+experts_setups = [(8, 1)]
 difficulty_options = [4]
-# expert_state_setups = [(8, 2), (8, 16)]
-expert_state_setups = [(8, 2)]
 n_layers = [2]
 dataset_size = [1_000_000]
-lbs_options = [None]
-attn_dim_options = [64]
 
 
 configs = []
-for difficulty in difficulty_options:
-    for n in n_layers:
-        for lr in lr_options:
-            for train_size in dataset_size:
-                for num_experts, state_dim in expert_state_setups:
-                    for attn_dim in attn_dim_options:
+for seed in seeds:
+    for difficulty in difficulty_options:
+        for n in n_layers:
+            for lr in lr_options:
+                for train_size in dataset_size:
+                    for num_experts, top_k in experts_setups:
                         batch_size = 128
                         config = TrainConfig(
                             learning_rate=lr,
@@ -47,17 +45,18 @@ for difficulty in difficulty_options:
                                 ],
                                 train_batch_size=batch_size,
                                 test_batch_size=batch_size,
+                                seed=seed,
                             ),
                             model=ModelConfig(
                                 vocab_size=VOCAB_SIZE,
                                 max_position_embeddings=MAX_LENGTH,
                                 sequence_mixer=ModuleConfig(
-                                    name="zoology.mixers.s4d_moe_attn.S4DMoEAttn",
+                                    name="zoology.mixers.fantastic.FantasticV1",
                                     kwargs={
                                         "dropout": 0.1,
-                                        "d_state": state_dim,
+                                        "d_state": 16,
                                         "num_experts": num_experts,
-                                        "attn_dim": attn_dim,
+                                        "top_k": top_k,
                                     },
                                 ),
                                 state_mixer = ModuleConfig(
@@ -65,12 +64,13 @@ for difficulty in difficulty_options:
                                     kwargs={"hidden_mult": 2}
                                 ),
                                 d_model=MODEL_DIM,
-                                block_type="S4DMoEAttnBlock",
+                                block_type="FantasticV1Block",
                                 n_layers=n,
                             ),
                             logger=LoggerConfig(
                                 name="tensorboard",
-                                project_name=f"S4D_attn/Attn_E{num_experts}S{state_dim}_L{n}_dfc{difficulty}_AD{attn_dim}",
-                            )
+                                project_name=f"baselines_v2/Fantastic_E{num_experts}A{top_k}_L{n}_dfc{difficulty}",
+                            ),
+                            seed=seed,
                         )
                         configs.append(config)

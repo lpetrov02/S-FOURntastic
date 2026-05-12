@@ -3,7 +3,12 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from typing import Optional
-from einops import repeat
+from einops import repeat, rearrange
+
+try:
+    from causal_conv1d import causal_conv1d_fn
+except:
+    assert 0, print(f"Need to install causal_conv1d: pip install causal_conv1d")
 
 
 class S4D(nn.Module):
@@ -26,6 +31,7 @@ class S4D(nn.Module):
         self,
         d_model: int,
         d_state: int = 64,
+        d_conv = 0,
         expand: int = 2,
         dropout: float = 0.0,
         dt_min: float = 1e-4,
@@ -41,6 +47,16 @@ class S4D(nn.Module):
         self.d_inner = expand * d_model
         self.n2 = d_state // 2  # complex conjugate pairs per channel
         self.layer_idx = layer_idx
+
+        self.d_conv = d_conv
+        self.conv1d = nn.Conv1d(
+            in_channels=self.d_inner,
+            out_channels=self.d_inner,
+            bias=True,
+            kernel_size=d_conv,
+            groups=self.d_inner,
+            padding=d_conv - 1,
+        ) if d_conv > 0 else nn.Identity()
 
         H, N2 = self.d_inner, self.n2
 
@@ -75,6 +91,7 @@ class S4D(nn.Module):
         self.D = nn.Parameter(torch.ones(H))
 
         self.act = nn.SiLU()
+        self.activation = "silu"
         self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
     def _ssm_kernel(self, L: int) -> torch.Tensor:
@@ -128,6 +145,19 @@ class S4D(nn.Module):
         # Project to (x, z): x goes through SSM, z gates the output
         xz = self.in_proj(hidden_states)                         # (B, L, 2*H)
         x, z = xz.chunk(2, dim=-1)                              # (B, L, H) each
+
+        if self.d_conv > 0:
+            if causal_conv1d_fn is None:
+                x = self.act(self.conv1d(x)[..., :L])
+            else:
+                assert self.activation in ["silu", "swish"]
+                x = causal_conv1d_fn(
+                    x,
+                    weight=rearrange(self.conv1d.weight, "d 1 w -> d w"),
+                    bias=self.conv1d.bias,
+                    activation=self.activation,
+                    seq_idx=None,
+                )
 
         x = x.transpose(1, 2)                                   # (B, H, L)
 

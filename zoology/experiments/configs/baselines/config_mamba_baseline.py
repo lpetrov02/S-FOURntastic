@@ -7,11 +7,9 @@ MAX_LENGTH = 512
 MODEL_DIM = 256
 
 lr_options = [3e-4]
-difficulty_options = [4]
-experts_setups = [(8, 1)]
+difficulty_options = [16, 32, 64]
 n_layers = [2]
-dataset_size = [100_000]
-lbs_options = [None, "aux_free"]
+dataset_size = [1_000_000]
 
 
 configs = []
@@ -19,54 +17,52 @@ for difficulty in difficulty_options:
     for n in n_layers:
         for lr in lr_options:
             for train_size in dataset_size:
-                for num_experts, topk in experts_setups:
-                    for lbs in lbs_options:
-                        batch_size = 128 if n <= 4 else 64
-                        config = TrainConfig(
-                            learning_rate=lr,
-                            max_epochs=30,
-                            weight_decay=0.1,
-                            data=DataConfig(
-                                train_configs=[
-                                    MQARConfig(
-                                        num_examples=train_size,
-                                        vocab_size=VOCAB_SIZE,
-                                        input_seq_len=MAX_LENGTH,
-                                        num_kv_pairs=difficulty,
-                                    )
-                                ],
-                                test_configs=[
-                                    MQARConfig(
-                                        num_examples=10_000,
-                                        vocab_size=VOCAB_SIZE,
-                                        input_seq_len=MAX_LENGTH,
-                                        num_kv_pairs=difficulty
-                                    )
-                                ],
-                                train_batch_size=batch_size,
-                                test_batch_size=batch_size,
-                            ),
-                            model=ModelConfig(
+                batch_size = 256
+                config = TrainConfig(
+                    learning_rate=lr,
+                    max_epochs=10,
+                    weight_decay=0.1,
+                    data=DataConfig(
+                        train_configs=[
+                            MQARConfig(
+                                num_examples=train_size,
                                 vocab_size=VOCAB_SIZE,
-                                max_position_embeddings=MAX_LENGTH,
-                                sequence_mixer=ModuleConfig(
-                                    name="zoology.mixers.mamba.Mamba",
-                                    kwargs={
-                                        "dropout": 0.1,
-                                        "d_state": 16,
-                                    },
-                                ),
-                                state_mixer = ModuleConfig(
-                                    name="zoology.mixers.mlp.MLP", 
-                                    kwargs={"hidden_mult": 2}
-                                ),
-                                d_model=MODEL_DIM,
-                                block_type="MambaBlock",
-                                n_layers=n,
-                            ),
-                            logger=LoggerConfig(
-                                name="tensorboard",
-                                project_name=f"baselines_v1/Mamba_{n}_layers__lr_{lr}__difficulty_{difficulty}",
+                                input_seq_len=MAX_LENGTH,
+                                num_kv_pairs=difficulty,
                             )
-                        )
-                        configs.append(config)
+                        ],
+                        test_configs=[
+                            MQARConfig(
+                                num_examples=10_000,
+                                vocab_size=VOCAB_SIZE,
+                                input_seq_len=MAX_LENGTH,
+                                num_kv_pairs=difficulty
+                            )
+                        ],
+                        train_batch_size=batch_size,
+                        test_batch_size=batch_size,
+                    ),
+                    model=ModelConfig(
+                        vocab_size=VOCAB_SIZE,
+                        max_position_embeddings=MAX_LENGTH,
+                        sequence_mixer=ModuleConfig(
+                            name="zoology.mixers.mamba.Mamba",
+                            kwargs={
+                                "dropout": 0.1,
+                                "d_state": 16,
+                            },
+                        ),
+                        state_mixer = ModuleConfig(
+                            name="zoology.mixers.mlp.MLP", 
+                            kwargs={"hidden_mult": 2}
+                        ),
+                        d_model=MODEL_DIM,
+                        block_type="MambaBlock",
+                        n_layers=n,
+                    ),
+                    logger=LoggerConfig(
+                        name="tensorboard",
+                        project_name=f"baselines_v1/MambaFinal_{n}_layers__lr_{lr}__difficulty_{difficulty}",
+                    )
+                )
+                configs.append(config)

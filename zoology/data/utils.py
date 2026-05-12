@@ -8,6 +8,7 @@ import numpy as np
 
 import torch 
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 from zoology.config import DataConfig, DataSegmentConfig
 
@@ -113,6 +114,16 @@ def prepare_data(config: DataConfig) -> Tuple[DataLoader, DataLoader]:
         for segment_config, seed in zip(config.test_configs, test_seeds)
     ], batch_size=test_batch_size)
 
+    print("Validating datasets...")
+    train_set = set()
+    for test_input, test_labels in tqdm(zip(train_segments.segments[0].inputs.numpy(), train_segments.segments[0].labels.numpy())):
+        train_set.add((tuple(test_input), tuple(test_labels)))
+    bads = 0
+    for test_input, test_labels in tqdm(zip(test_segments.segments[0].inputs.numpy(), test_segments.segments[0].labels.numpy())):
+        if (tuple(test_input), tuple(test_labels)) in train_set:
+            bads += 1
+    print(f"Contamination rate:", bads / len(test_segments.segments[0].inputs))
+
     return (
         DataLoader(ds, batch_size=None, num_workers=0,  shuffle=False)
         for ds in [train_segments, test_segments]
@@ -143,6 +154,14 @@ def prepare_continuous_data(config: DataConfig, embeddings: torch.Tensor) -> Tup
         DataSegment.from_config(segment_config, seed=int(seed), **factory_kwargs)
         for segment_config, seed in zip(config.test_configs, test_seeds)
     ], batch_size=test_batch_size)
+
+    print("Validating datasets...")
+    train_set = set(zip(train_segments.segments[0].inputs.numpy(), train_segments.segments[0].labels.numpy()))
+    bads = 0
+    for test_input, test_labels in zip(test_segments.segments[0].inputs.numpy(), test_segments.segments[0].labels.numpy()):
+        if (test_input, test_labels) in train_set:
+            bads += 1
+    print(f"Contamination rate:", bads / len(test_segments.segments[0].inputs))
 
     return (
         DataLoader(ds, batch_size=None, num_workers=0, shuffle=False)

@@ -83,25 +83,25 @@ class S4DMoEAttn(nn.Module):
         self.out_proj = nn.Linear(H, d_model, bias=False)
 
         # SSM parameters: (E, H, ...) — one independent set per expert
-        log_dt = torch.rand(E, H) * (math.log(dt_max) - math.log(dt_min)) + math.log(dt_min)
-        self.log_dt = nn.Parameter(log_dt)                           # (E, H)
+        log_dt = torch.rand(E * H) * (math.log(dt_max) - math.log(dt_min)) + math.log(dt_min)
+        self.log_dt = nn.Parameter(log_dt)                           # (E*H)
 
-        log_A_real = torch.log(0.5 * torch.ones(E, H, N2))
-        self.log_A_real = nn.Parameter(log_A_real)                   # (E, H, N2)
+        log_A_real = torch.log(0.5 * torch.ones(E * H, N2))
+        self.log_A_real = nn.Parameter(log_A_real)                   # (E*H, N2)
 
-        A_imag = math.pi * repeat(torch.arange(N2, dtype=torch.float32), "n -> e h n", e=E, h=H)
+        A_imag = math.pi * repeat(torch.arange(N2, dtype=torch.float32), "n -> h n", h=E*H)
         if learnable_A_imag:
-            self.A_imag = nn.Parameter(A_imag)                       # (E, H, N2)
+            self.A_imag = nn.Parameter(A_imag)                       # (E*H, N2)
         else:
             self.register_buffer("A_imag", A_imag)
 
-        B = torch.ones(E, H, N2, dtype=torch.cfloat)
-        self.B = nn.Parameter(torch.view_as_real(B))                 # (E, H, N2, 2)
+        B = torch.ones(E * H, N2, dtype=torch.cfloat)
+        self.B = nn.Parameter(torch.view_as_real(B))                 # (E*H, N2, 2)
 
-        C = torch.randn(E, H, N2, dtype=torch.cfloat)
-        self.C = nn.Parameter(torch.view_as_real(C))                 # (E, H, N2, 2)
+        C = torch.randn(E * H, N2, dtype=torch.cfloat)
+        self.C = nn.Parameter(torch.view_as_real(C))                 # (E*H, N2, 2)
 
-        self.D = nn.Parameter(torch.randn(E, H))                     # (E, H)
+        self.D = nn.Parameter(torch.randn(E * H))                     # (E*H)
 
         self.act = nn.SiLU()
         self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
@@ -114,20 +114,20 @@ class S4DMoEAttn(nn.Module):
 
         Returns: (E*H, L) real tensor
         """
-        dt = torch.exp(self.log_dt)                                   # (E, H)
-        A = -torch.exp(self.log_A_real) + 1j * self.A_imag           # (E, H, N2) complex
-        B = torch.view_as_complex(self.B.contiguous())                # (E, H, N2) complex
-        C = torch.view_as_complex(self.C.contiguous())                # (E, H, N2) complex
+        dt = torch.exp(self.log_dt)                                   # (E * H)
+        A = -torch.exp(self.log_A_real) + 1j * self.A_imag           # (E * H, N2) complex
+        B = torch.view_as_complex(self.B.contiguous())                # (E * H, N2) complex
+        C = torch.view_as_complex(self.C.contiguous())                # (E * H, N2) complex
 
         # ZOH discretization
-        dtA = A * dt.unsqueeze(-1)                                    # (E, H, N2)
-        Abar = torch.exp(dtA)                                         # (E, H, N2)
+        dtA = A * dt.unsqueeze(-1)                                    # (E * H, N2)
+        Abar = torch.exp(dtA)                                         # (E * H, N2)
         A_safe = torch.where(A.abs() < 1e-6, A + 1e-6, A)
-        Bbar = B * (Abar - 1.0) / A_safe                             # (E, H, N2)
+        Bbar = B * (Abar - 1.0) / A_safe                             # (E * H, N2)
 
-        log_Abar = torch.log(Abar + 1e-30)                           # (E, H, N2) complex
+        log_Abar = torch.log(Abar + 1e-30)                           # (E * H, N2) complex
         t = torch.arange(L, device=self.log_dt.device, dtype=torch.float32)
-        powers = torch.exp(t.view(1, 1, 1, L) * log_Abar.unsqueeze(-1))  # (E, H, N2, L)
+        powers = torch.exp(t.view(1, 1, L) * log_Abar.unsqueeze(-1))  # (E * H, N2, L)
 
         CB = (C * Bbar).unsqueeze(-1)
         K = 2.0 * (CB * powers).sum(dim=-2).real
@@ -136,7 +136,7 @@ class S4DMoEAttn(nn.Module):
     def _fft_conv(self, u: torch.Tensor, K: torch.Tensor) -> torch.Tensor:
         """
         Causal linear convolution via FFT.
-        u: (B, E, H, L),  K: (E, H, L)  ->  (B, E, H, L)
+        u: (B, E * H, L),  K: (E * H, L)  ->  (B, E * H, L)
         """
         L = u.shape[-1]
         fft_len = 2 * L  # zero-pad to avoid circular wrap-around
@@ -162,17 +162,18 @@ class S4DMoEAttn(nn.Module):
         x, z = xz.chunk(2, dim=-1)                                   # (B, L, H) each
         x = x.transpose(1, 2)                                        # (B, H, L)
 
-        x_flat = x.unsqueeze(1).expand(-1, E, -1, -1).contiguous()  # (B, E, H, L)
+        x_flat = x.unsqueeze(1).expand(-1, E, -1, -1).flatten(1, 2)  # (B, E * H, L)
+        # x_flat = repeat(x, "b h l -> b (e h) l", e=E)
 
-        K = self._ssm_kernel(L)                               # (H, L), (H, N2, L)
-        y = self._fft_conv(x_flat, K)                              # (B, E, H, L)
-        y = y + self.D[None, :, :, None] * x_flat
+        K = self._ssm_kernel(L)
+        y = self._fft_conv(x_flat, K)     # (B, E * H, L)
+        y = (y + self.D[None, :, None] * x_flat).reshape(B, E, H, L)
 
         # Weight by routing scores and sum over experts
         y = y.permute(0, 3, 1, 2).flatten(0, 1)  # (BL, E, H)
         x = x.permute(0, 2, 1).flatten(0, 1).unsqueeze(1)  # (BL, 1, H)
-        # y = self.router(x, y, y).squeeze(1).reshape(B, L, H)  # (BL, 1, H)
-        y = y.mean(1).reshape(B, L, H)
+        y = self.router(x, y, y).squeeze(1).reshape(B, L, H)  # (B, L, H)
+        # y = y.mean(1).reshape(B, L, H)
 
         y = self.act(y) * torch.sigmoid(z)                           # GLU gate
         y = self.dropout(y)
